@@ -1,0 +1,10 @@
+{
+  "name": "pi-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI 工作台 · PI 驱动层：内嵌真实 PI SDK，作为 Tauri 前端与 PI 本体之间的桥梁",
+  "engines": {
+    "node": ">=20"
+  }
+}

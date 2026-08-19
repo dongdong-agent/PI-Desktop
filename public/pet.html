@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>宠物</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: transparent;
+        overflow: hidden;
+        height: 100%;
+        user-select: none;
+        cursor: grab;
+      }
+      body:active {
+        cursor: grabbing;
+      }
+
+      /* 拖拽区域：整窗可拖动 */
+      .pet-root {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-app-region: drag;
+      }
+
+      /* 角色（小幽灵） */
+      .ghost {
+        width: 64px;
+        height: 64px;
+        position: relative;
+        animation: float 3s ease-in-out infinite;
+        transition: transform 0.3s;
+      }
+
+      /* 状态：忙碌（转圈 + 眉头） */
+      body.busy .ghost {
+        animation: busy-spin 1.1s linear infinite;
+      }
+      @keyframes busy-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
+      /* 状态：思考（浮动加快 + 轻微倾斜） */
+      body.think .ghost {
+        animation: think-float 0.9s ease-in-out infinite;
+      }
+      @keyframes think-float {
+        0%, 100% { transform: translateY(0) rotate(0deg); }
+        50% { transform: translateY(-12px) rotate(4deg); }
+      }
+
+      /* 状态：空闲聆听（缓慢起伏） */
+      body.done .ghost {
+        animation: done-float 4s ease-in-out infinite;
+      }
+      @keyframes done-float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-4px); }
+      }
+
+
+      .ghost__body {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, #8ea7ff 0%, #6d8dff 100%);
+        border-radius: 50% 50% 45% 45%;
+        box-shadow: 0 6px 16px rgba(109, 141, 255, 0.4);
+      }
+
+      .ghost__eye {
+        position: absolute;
+        width: 8px;
+        height: 10px;
+        background: #fff;
+        border-radius: 50%;
+        top: 24px;
+      }
+      .ghost__eye--l {
+        left: 17px;
+      }
+      .ghost__eye--r {
+        right: 17px;
+      }
+
+      .ghost__mouth {
+        position: absolute;
+        width: 10px;
+        height: 6px;
+        left: 27px;
+        top: 38px;
+        border-bottom: 2px solid #fff;
+        border-radius: 0 0 10px 10px;
+      }
+
+      .ghost__blush {
+        position: absolute;
+        width: 9px;
+        height: 5px;
+        background: rgba(255, 140, 140, 0.7);
+        border-radius: 50%;
+        top: 33px;
+      }
+      .ghost__blush--l {
+        left: 9px;
+      }
+      .ghost__blush--r {
+        right: 9px;
+      }
+
+      /* 尾巴 */
+      .ghost__tail {
+        position: absolute;
+        bottom: -6px;
+        left: 12px;
+        width: 12px;
+        height: 12px;
+        background: inherit;
+        border-radius: 50%;
+        filter: brightness(1.15);
+      }
+
+      @keyframes float {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-8px);
+        }
+      }
+
+      /* 眨眼 */
+      .blink {
+        animation: blink 4s infinite;
+      }
+      @keyframes blink {
+        0%,
+        92%,
+        100% {
+          transform: scaleY(1);
+        }
+        95% {
+          transform: scaleY(0.1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="pet-root">
+      <div class="ghost">
+        <div class="ghost__body"></div>
+        <div class="ghost__eye ghost__eye--l blink"></div>
+        <div class="ghost__eye ghost__eye--r blink"></div>
+        <div class="ghost__mouth"></div>
+        <div class="ghost__blush ghost__blush--l"></div>
+        <div class="ghost__blush ghost__blush--r"></div>
+        <div class="ghost__tail"></div>
+      </div>
+    </div>
+    <script>
+      // 监听主窗口广播的宠物行为状态（busy/think/done）
+      (function () {
+        function setState(state) {
+          var valid = ["busy", "think", "done"];
+          var cls = valid.indexOf(state) >= 0 ? state : "done";
+          document.body.classList.remove("busy", "think", "done");
+          document.body.classList.add(cls);
+        }
+        setState("done");
+        var tauri = window.__TAURI__;
+        if (tauri && tauri.event) {
+          tauri.event.listen("pet_event", function (ev) {
+            if (ev && ev.payload) setState(String(ev.payload));
+          }).catch(function (e) {
+            console.error("pet listen error", e);
+          });
+        } else {
+          console.warn("pet: __TAURI__ 不可用（withGlobalTauri 未生效）");
+        }
+      })();
+    </script>
+  </body>
+</html>

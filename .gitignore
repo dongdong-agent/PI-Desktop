@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri
+src-tauri/target
+target
+src-tauri/gen/schemas
+src-tauri/gen/apple
+src-tauri/gen/android
+
+# 安装包产物（发布时单独上传，不入仓库）
+src-tauri/target/release/bundle/nsis/*.exe
+src-tauri/target/release/bundle/msi/*.msi
+*.bat
+upg*.bat
+
+# 运行时/临时
+drivers/sidecar/probe-*.mjs
+/tmp
+
+# 捆绑运行时 / pi 包（打包时生成，源码仓库不入）
+src-tauri/resources/node-win-x64/
+src-tauri/resources/pi-package/
