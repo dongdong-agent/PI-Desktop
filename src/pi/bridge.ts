@@ -45,10 +45,14 @@ async function ensureBound(): Promise<void> {
   if (bound) return;
   if (!unlistenPromise) {
     unlistenPromise = listen<string>("pi_event", (e) => {
+      const raw = (e.payload ?? "").trim();
+      if (!raw) return; // 空行直接忽略，不视为解析失败
       let parsed: any;
       try {
-        parsed = JSON.parse(e.payload);
+        parsed = JSON.parse(raw);
       } catch {
+        // 非 JSON 行：仅记录，便于排查，不再对空/噪声行弹出错误横幅
+        console.warn("[bridge] 无法解析事件行:", raw.slice(0, 300));
         parsed = { type: "bridge_error", error: "事件解析失败" };
       }
       dispatch(parsed);

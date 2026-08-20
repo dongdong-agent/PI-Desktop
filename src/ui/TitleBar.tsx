@@ -17,9 +17,7 @@ export function TitleBar() {
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar__brand" data-tauri-drag-region>
-        <span className="titlebar__logo">◆</span>
-        <span className="titlebar__title">PI Agent</span>
-        <span className="titlebar__ver">0.2</span>
+        <span className="titlebar__logo">π</span>
       </div>
       <div className="titlebar__spacer" data-tauri-drag-region />
       <div className="titlebar__controls">

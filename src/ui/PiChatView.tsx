@@ -144,6 +144,12 @@ export function PiChatView() {
       }
     };
     window.addEventListener("pi:insert-text", onInsertText);
+    // 消息操作条「重发」：重新发送指定文本
+    const onResend = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t) send(t);
+    };
+    window.addEventListener("pi:resend", onResend);
     return () => {
       disposed = true;
       window.clearTimeout(flushTimerRef.current);
@@ -151,6 +157,7 @@ export function PiChatView() {
       eventQueueRef.current = [];
       window.removeEventListener("pi:session-changed", onSessionChanged);
       window.removeEventListener("pi:insert-text", onInsertText);
+      window.removeEventListener("pi:resend", onResend);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleEvent]);
@@ -350,10 +357,11 @@ export function PiChatView() {
     });
   };
 
+  // codex 风格：空对话（无消息、非忙碌）时输入框居中；有消息后沉底
+  const isNewChat = ui.messages.length === 0 && !ui.busy;
+
   return (
     <div className="chat" onContextMenu={openAppMenu}>
-      <Header ui={ui} />
-
       <div className="chat__main">
         <div className="chat__main-left">
           <div className="chat__scroll pi-scroll" ref={scrollRef} onScroll={handleScroll}>
@@ -378,7 +386,7 @@ export function PiChatView() {
             {ui.lastError && <div className="pi-errorbar">⚠️ {ui.lastError}</div>}
           </div>
 
-          <div className="chat__inputbar">
+          <div className={`chat__inputbar${isNewChat ? " chat__inputbar--centered" : ""}`}>
             <div className="chat__composer">
               {completer.open && completer.items.length > 0 && (
                 <div className="completer">
@@ -485,30 +493,7 @@ export function PiChatView() {
   );
 }
 
-function Header({ ui }: { ui: PiChatUiState }) {
-  const webPreview = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-  return (
-    <header className="chat__header">
-      <div className="chat__title">
-        <span className="chat__title-text">PI Agent</span>
-        {ui.busy && <span className="chat__streaming">● 工作中</span>}
-        {ui.statusText && <span className="chat__status">{ui.statusText}</span>}
-      </div>
-      <div className="chat__controls">
-        {webPreview && (
-          <span className="pi-model-chip" title="网页预览模式：无法连接真实 PI">
-            🌐 网页预览（未连接 PI）
-          </span>
-        )}
-        <span className="pi-model-chip" title="当前模型（来自真实 PI 会话）">
-          {ui.modelLabel || "模型未知"}
-        </span>
-      </div>
-    </header>
-  );
-}
-
-// 消息卡片 memo：流式更新时只有最后一条消息的引用变化，其余消息直接跳过渲染
+/** 消息卡片 memo：流式更新时只有最后一条消息的引用变化，其余消息直接跳过渲染 */
 const INITIAL_RENDER = 200; // 长会话默认只渲染最近 N 条，防上万 DOM 卡顿
 const EXPAND_STEP = 200; // 每次「展开更早」加载条数
 
@@ -542,30 +527,48 @@ function MessageWindow({ messages }: { messages: PiViewMessage[] }) {
           ⬆ 显示更早 {Math.min(EXPAND_STEP, hiddenBefore)} 条（共 {hiddenBefore} 条更早）
         </button>
       )}
-      {shown.map((m) => (
-        <MessageCard key={m.id} msg={m} />
-      ))}
+      {shown.map((m, i) => {
+        // 找到该条之前最近的用户文本（AI 消息「重新生成」时用）
+        let prevUser = "";
+        for (let j = i - 1; j >= 0; j--) {
+          if (shown[j].role === "user") {
+            const tb = shown[j].blocks.find((b) => b.kind === "text");
+            if (tb) {
+              prevUser = tb.text;
+              break;
+            }
+          }
+        }
+        return <MessageCard key={m.id} msg={m} prevUserText={prevUser} />;
+      })}
     </>
   );
 }
 
 const MessageCard = memo(function MessageCard({
   msg,
+  prevUserText = "",
 }: {
   msg: { role: "user" | "assistant"; blocks: PiBlock[]; status: string };
+  prevUserText?: string;
 }) {
   if (msg.role === "user") {
     const textBlock = msg.blocks.find((b) => b.kind === "text");
+    const plain = textBlock?.text ?? "";
     return (
       <div className="msg msg--user">
-        <div className="msg__body msg__body--user">
-          <div className="msg__text">{textBlock ? <p>{textBlock.text}</p> : null}</div>
+        <div className="msg__stack">
+          <div className="msg__body msg__body--user">
+            <div className="msg__text">{plain ? <p>{plain}</p> : null}</div>
+          </div>
+          <MsgOps text={plain} canResend={!!plain} />
         </div>
       </div>
     );
   }
 
   const streaming = msg.status === "streaming" || msg.blocks.some((b) => b.kind === "toolCall" && b.status === "running");
+  const plain = msgPlainText(msg.blocks);
 
   return (
     <div className="msg msg--assistant">
@@ -575,10 +578,71 @@ const MessageCard = memo(function MessageCard({
           <BlockView key={i} block={block} />
         ))}
         {streaming && <span className="msg__caret" />}
+        <MsgOps text={plain} canResend={!!prevUserText} resendText={prevUserText} />
       </div>
     </div>
   );
 });
+
+/** 消息纯文本（复制 / 保存用）：正文 + 工具输出 */
+function msgPlainText(blocks: PiBlock[]): string {
+  return blocks
+    .filter((b) => b.kind === "text" || b.kind === "toolResult")
+    .map((b) => b.text)
+    .join("\n\n");
+}
+
+/** 消息操作条：复制 / 重发 / 保存为文档（hover 显示，低调） */
+function MsgOps({ text, canResend, resendText }: { text: string; canResend: boolean; resendText?: string }) {
+  const [saved, setSaved] = useState(false);
+  const saveAsDoc = async () => {
+    if (!text) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const path = await save({
+        defaultPath: `对话-导出-${new Date().toISOString().slice(0, 10)}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return;
+      await invoke("write_text_file", { path, content: text });
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1500);
+    } catch {
+      // 非 Tauri 环境：降级为浏览器下载
+      try {
+        const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "对话-导出.md";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  if (!text) return null;
+  return (
+    <div className="msg-ops">
+      <button className="msg-ops__btn" title="复制全文" onClick={() => void navigator.clipboard.writeText(text)}>
+        复制
+      </button>
+      {canResend && (
+        <button
+          className="msg-ops__btn"
+          title="重新发送"
+          onClick={() => window.dispatchEvent(new CustomEvent("pi:resend", { detail: resendText || text }))}
+        >
+          重发
+        </button>
+      )}
+      <button className="msg-ops__btn" title="保存为 Markdown 文档" onClick={() => void saveAsDoc()}>
+        {saved ? "已保存" : "保存"}
+      </button>
+    </div>
+  );
+}
 
 function BlockView({ block }: { block: PiBlock }) {
   switch (block.kind) {
@@ -735,7 +799,11 @@ const ToolBar = memo(function ToolBar({ onTree }: { onTree: () => void }) {
           className="toolbar__select"
           value={thinkingLevel ?? "medium"}
           onChange={(e) => {
-            if (e.target.value) void setThinking(e.target.value);
+            const v = e.target.value;
+            if (!v) return;
+            void setThinking(v);
+            // 同时写回默认思考级别，保证下次启动沿用本次选择
+            void piSend({ type: "set_setting", key: "defaultThinkingLevel", value: v });
           }}
         >
           {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => (

@@ -8,6 +8,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+/// Windows 下隐藏子进程控制台窗口（GUI 主进程 spawn 控制台型 node 子进程时，
+/// 若不设此标志，每次启动都会弹出一个黑色终端窗口）。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -17,13 +25,43 @@ pub struct PiBridge {
     stdin: Mutex<ChildStdin>,
 }
 
+/// 诊断日志：写到应用资源目录同级的 pi-bridge.log（安装根可写，per-user）
+fn bridge_log(app: &AppHandle, line: &str) {
+    let dir = match app.path().resource_dir() {
+        Ok(d) => d,
+        Err(_) => std::env::temp_dir(),
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let p = dir.join("pi-bridge.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// 去掉 Windows verbatim 路径前缀（\\?\），否则 sidecar 用 pathToFileURL + import 无法解析 PI_GUI_PI_DIST。
+fn clean_path(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    p
+}
+
 /// 定位 sidecar 脚本：资源目录（安装版）> 环境变量 > 项目 drivers/sidecar/sidecar.mjs（开发版）
 fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
-    // 1) 安装版：从打包资源解析（bundle.resources 已包含 sidecar.mjs）
+    // 1) 安装版：从打包资源解析（bundle.resources 已包含 sidecar.mjs，位于 resources/drivers/…）
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("drivers/sidecar/sidecar.mjs");
-        if bundled.exists() {
-            return Ok(bundled);
+        let rd = clean_path(resource_dir);
+        for rel in ["resources/drivers/sidecar/sidecar.mjs", "drivers/sidecar/sidecar.mjs"] {
+            let candidate = rd.join(rel);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
     }
     // 2) 显式环境变量
@@ -48,7 +86,8 @@ fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// 定位捆绑的 Node runtime：资源目录 node-win-x64/node.exe > 系统 node
 fn node_path(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("resources/node-win-x64/node.exe");
+        let rd = clean_path(resource_dir);
+        let bundled = rd.join("resources/node-win-x64/node.exe");
         if bundled.exists() {
             return Ok(bundled);
         }
@@ -64,8 +103,15 @@ fn node_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 impl PiBridge {
     pub fn spawn(app: &AppHandle) -> Result<Self, String> {
+        bridge_log(app, "[spawn] begin");
+        bridge_log(app, &format!("[spawn] resource_dir={:?}", app.path().resource_dir()));
         let sidecar = sidecar_path(app)?;
         let node = node_path(app)?;
+        bridge_log(app, &format!("[spawn] sidecar={:?} node={:?}", sidecar, node));
+        bridge_log(app, &format!("[spawn] env PI_GUI_SIDECAR={:?} PI_GUI_PI_DIST={:?} PI_GUI_RESOURCE_DIR={:?}",
+            std::env::var("PI_GUI_SIDECAR").ok(),
+            std::env::var("PI_GUI_PI_DIST").ok(),
+            std::env::var("PI_GUI_RESOURCE_DIR").ok()));
 
         // 传给 sidecar 的资源定位（捆绑的 pi 包 / 资源目录）
         let mut cmd = Command::new(&node);
@@ -73,18 +119,25 @@ impl PiBridge {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // 隐藏 sidecar 控制台窗口，静默启动（不弹黑窗）
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         if let Ok(resource_dir) = app.path().resource_dir() {
+            let rd = clean_path(resource_dir);
+            bridge_log(app, &format!("[spawn] rd(clean)={:?}", rd));
             // 捆绑 pi 包：PI_GUI_PI_DIST 指向资源里的 dist/index.js
-            let pi_dist = resource_dir.join("resources/pi-package/dist/index.js");
+            let pi_dist = rd.join("resources/pi-package/dist/index.js");
+            bridge_log(app, &format!("[spawn] pi_dist={:?} exists={}", pi_dist, pi_dist.exists()));
             if pi_dist.exists() {
                 cmd.env("PI_GUI_PI_DIST", &pi_dist);
             }
-            cmd.env("PI_GUI_RESOURCE_DIR", &resource_dir);
+            cmd.env("PI_GUI_RESOURCE_DIR", &rd);
         }
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("spawn sidecar 失败（node: {node:?}）: {e}"))?;
+            .map_err(|e| { bridge_log(app, &format!("[spawn] FAIL {e}")); format!("spawn sidecar 失败（node: {node:?}）: {e}") })?;
+        bridge_log(app, &format!("[spawn] ok pid={:?} early_exit={:?}", child.id(), child.try_wait().ok().flatten()));
 
         let stdin = child.stdin.take().ok_or("sidecar stdin 不可用")?;
         let stdout = child.stdout.take().ok_or("sidecar stdout 不可用")?;

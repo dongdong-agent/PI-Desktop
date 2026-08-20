@@ -9,6 +9,7 @@ import { projectShortName, usePiUiStore } from "../pi/piUiStore";
 import { SettingsPanel } from "./SettingsPanel";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { SkillDialog } from "./SkillDialog";
+import { PinIcon, BubbleIcon, PencilIcon, LinkIcon, PlusIcon } from "./icons";
 
 interface PiSessionItem {
   path: string;
@@ -31,18 +32,6 @@ interface ProjectNode {
   sessions: PiSessionItem[];
 }
 
-function relTime(iso?: string): string {
-  if (!iso) return "";
-  const t = new Date(iso).getTime();
-  const diff = Date.now() - t;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "刚刚";
-  if (min < 60) return `${min} 分钟前`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  return `${Math.floor(hr / 24)} 天前`;
-}
-
 /** 通知主视图刷新（切换会话/项目后） */
 export function notifySessionChanged(): void {
   window.dispatchEvent(new CustomEvent("pi:session-changed"));
@@ -58,6 +47,8 @@ export function Sidebar() {
   const [petVisible, setPetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addProjectOpen, setAddProjectOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(true); // 项目区默认展开，可点标题折叠
+  const [allSessionsOpen, setAllSessionsOpen] = useState(true); // 未分类对话区默认展开
 
   // 树状会话数据
   const [projects, setProjects] = useState<ProjectNode[]>([]);
@@ -113,10 +104,70 @@ export function Sidebar() {
       /* ignore */
     }
   }, []);
+  // 项目置顶（本地持久化排序）
+  const [projPinned, setProjPinned] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("aiwb:proj-pinned") ?? "[]") as string[]);
+    } catch {
+      return new Set();
+    }
+  });
+  const saveProjPinned = useCallback((next: Set<string>) => {
+    setProjPinned(next);
+    try {
+      localStorage.setItem("aiwb:proj-pinned", JSON.stringify([...next]));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  // 项目显示别名（重命名用，本地持久化）
+  const [projAliases, setProjAliases] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("aiwb:proj-aliases") ?? "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  });
+  const saveProjAliases = useCallback((next: Record<string, string>) => {
+    setProjAliases(next);
+    try {
+      localStorage.setItem("aiwb:proj-aliases", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const projName = useCallback((cwd: string) => projAliases[cwd] || projectShortName(cwd), [projAliases]);
+  const toggleProjPin = useCallback(
+    (cwd: string) => {
+      const next = new Set(projPinned);
+      if (next.has(cwd)) next.delete(cwd);
+      else next.add(cwd);
+      saveProjPinned(next);
+    },
+    [projPinned, saveProjPinned],
+  );
+  const renameProj = useCallback(
+    (cwd: string) => {
+      const cur = projAliases[cwd] || projectShortName(cwd);
+      const name = window.prompt("设置项目显示名称（空 = 恢复原名）：", cur);
+      if (name === null) return;
+      const next = { ...projAliases, [cwd]: name.trim() };
+      if (!name.trim()) delete next[cwd];
+      saveProjAliases(next);
+    },
+    [projAliases, saveProjAliases],
+  );
+  // 项目右键菜单
+  const [projCtx, setProjCtx] = useState<{ x: number; y: number; cwd: string } | null>(null);
+  const openProjCtx = useCallback((e: React.MouseEvent, cwd: string) => {
+    e.preventDefault();
+    setProjCtx({ x: e.clientX, y: e.clientY, cwd });
+  }, []);
+
   const [activeFile, setActiveFile] = useState<string | null>(null);
-  const [busySwitch, setBusySwitch] = useState(false);
-  const [commands, setCommands] = useState<{ skills: SkillItem[] } | null>(null);
+  const [commands, setCommands] = useState<{ skills: SkillItem[]; extensions: { name?: string; path?: string }[] } | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
+  const [pluginOpen, setPluginOpen] = useState(false);
   const [invoking, setInvoking] = useState<string | null>(null);
   // 技能调用对话框（描述驱动 + 快捷模板，替代 window.prompt）
   const [skillDialog, setSkillDialog] = useState<{ name: string; description: string } | null>(null);
@@ -186,7 +237,7 @@ export function Sidebar() {
   const refreshCommands = useCallback(async () => {
     try {
       const res = await piSend({ type: "get_commands" });
-      if (res?.success && res.data) setCommands({ skills: res.data.skills ?? [] });
+      if (res?.success && res.data) setCommands({ skills: res.data.skills ?? [], extensions: res.data.extensions ?? [] });
     } catch {
       /* 桥未就绪 */
     }
@@ -277,16 +328,44 @@ export function Sidebar() {
     [loadAll, refresh],
   );
 
+  // 拖放文件夹到侧栏 → 快速添加为项目（Tauri 环境生效，纯浏览器忽略）
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setup = async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === "over") {
+            setDragging(true);
+          } else if (p.type === "leave") {
+            setDragging(false);
+          } else if (p.type === "drop") {
+            setDragging(false);
+            const paths = (p.paths ?? []) as string[];
+            const dir = paths[0];
+            if (dir) void addProject(dir);
+          }
+        });
+      } catch {
+        /* 非 Tauri 环境（web 预览）忽略：拖放不可用 */
+      }
+    };
+    void setup();
+    return () => {
+      unlisten?.();
+    };
+  }, [addProject]);
+
   const switchSession = useCallback(
     (path: string) => {
-      setBusySwitch(true);
       try {
         localStorage.setItem("aiwb:last-session", path);
       } catch {
         /* ignore */
       }
       void piSend({ type: "switch_session", sessionPath: path }).then((res) => {
-        setBusySwitch(false);
         if (res?.success) {
           void refresh();
           notifySessionChanged();
@@ -381,6 +460,12 @@ export function Sidebar() {
   );
 
   const skills = commands?.skills ?? [];
+  const extensions = commands?.extensions ?? [];
+  // 项目排序：置顶优先（内存中重排，不影响持久数据）
+  const sortedProjects = useMemo(
+    () => [...projects].sort((a, b) => Number(projPinned.has(b.cwd)) - Number(projPinned.has(a.cwd))),
+    [projects, projPinned],
+  );
 
   const renderSession = (s: PiSessionItem) => (
     <SessionItem
@@ -396,75 +481,105 @@ export function Sidebar() {
   return (
     <aside className="sidebar" style={{ width: sidebarWidth }}>
       <div className="sidebar__resize" onMouseDown={startResize} title="拖拽调整宽度" />
-      <div className="sidebar__brand">
-        <div className="sidebar__logo">PI</div>
-        <div>
-          <div className="sidebar__name">PI Agent</div>
-          <div className="sidebar__ver">底层 · PI 终端</div>
-        </div>
-      </div>
-
-      <button className="btn btn--primary btn--block" onClick={newSession}>
+      <button className="btn btn--block btn--new" onClick={newSession}>
         ＋ 新建 PI 会话
       </button>
 
-      <button
-        className="chip chip--sm btn--block"
-        onClick={() => {
-          void petToggleRequest(!petVisible).then((ok) => setPetVisible(ok));
-        }}
-      >
-        {petVisible ? "🐱 收起桌面宠物" : "🐱 呼出桌面宠物"}
-      </button>
-
-      <div className="sidebar__scroll">
-      {/* 未分类会话（不归属任何项目） */}
-      {orphaned.length > 0 && (
-        <>
-          <div className="sidebar__label">未分类会话</div>
-          <nav className="session-list">
-            {[...orphaned].sort((a, b) => Number(pinned.has(b.path)) - Number(pinned.has(a.path))).map(renderSession)}
-          </nav>
-        </>
+      <div className={`sidebar__scroll${dragging ? " sidebar__scroll--drag" : ""}`}>
+      {dragging && (
+        <div className="sidebar__drop-hint">松开鼠标，将此文件夹添加为项目</div>
       )}
-
-      {/* 项目树：项目节点 + 其会话（可折叠） */}
-      <div className="sidebar__label-row">
-        <span>项目</span>
-        <button className="sidebar__add" title="添加项目目录" onClick={() => setAddProjectOpen(true)}>
+      {/* 项目：点击标题折叠/展开整个项目区 */}
+      <div
+        className="sidebar__toggle sidebar__toggle--row"
+        role="button"
+        title={projectsOpen ? "折叠项目列表" : "展开项目列表"}
+        onClick={() => setProjectsOpen((v) => !v)}
+      >
+        <span className="sidebar__toggle-arrow">{projectsOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">项目</span>
+        <button
+          className="sidebar__add"
+          title="添加项目目录"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAddProjectOpen(true);
+          }}
+        >
           ＋
         </button>
       </div>
+      {projectsOpen && (
       <nav className="project-tree">
         {projects.length === 0 ? (
           <div className="sidebar__placeholder">
             <p>暂无项目</p>
           </div>
         ) : (
-          projects.map((p) => (
+          sortedProjects.map((p) => (
             <ProjectItem
               key={p.cwd}
               p={p}
               isOpen={!!expanded[p.cwd]}
               isActive={currentCwd === p.cwd}
               pinned={pinned}
+              displayName={projName(p.cwd)}
+              projPinned={projPinned.has(p.cwd)}
               onToggle={toggleProject}
               onSwitchProject={switchProject}
               onNewSession={newSession}
               onSwitchSession={switchSession}
               onCtx={openCtxMenu}
+              onProjCtx={openProjCtx}
               activeFile={activeFile}
             />
           ))
         )}
       </nav>
+      )}
 
+      {/* 对话（不属于任何项目的会话）：点击标题折叠/展开 */}
+      <div
+        className="sidebar__toggle sidebar__toggle--row"
+        role="button"
+        title={allSessionsOpen ? "折叠对话列表" : "展开对话列表"}
+        onClick={() => setAllSessionsOpen((v) => !v)}
+      >
+        <span className="sidebar__toggle-arrow">{allSessionsOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">
+          对话{orphaned.length > 0 ? `（${orphaned.length}）` : ""}
+        </span>
+        <button
+          className="sidebar__add"
+          title="新建对话"
+          onClick={(e) => {
+            e.stopPropagation();
+            newSession();
+          }}
+        >
+          ＋
+        </button>
       </div>
+      {allSessionsOpen && (
+        <nav className="session-list session-list--tree">
+          {orphaned.length === 0 ? (
+            <div className="sidebar__placeholder">
+              <p>暂无未分类对话</p>
+            </div>
+          ) : (
+            [...orphaned]
+              .sort((a, b) => Number(pinned.has(b.path)) - Number(pinned.has(a.path)))
+              .map(renderSession)
+          )}
+        </nav>
+      )}
 
-      {/* 技能库 */}
-      <div className="sidebar__label">技能库 {skills.length > 0 && `（${skills.length}）`}</div>
-      <button className="chip chip--sm btn--block" onClick={() => setSkillOpen((v) => !v)}>
-        {skillOpen ? "▾ 收起技能列表" : "▸ 展开技能（点击即调用）"}
+      {/* 技能库：点击标题折叠/展开 */}
+      <button className="sidebar__toggle" onClick={() => setSkillOpen((v) => !v)}>
+        <span className="sidebar__toggle-arrow">{skillOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">
+          技能库{skills.length > 0 ? `（${skills.length}）` : ""}
+        </span>
       </button>
       {skillOpen && (
         <div className="skill-list">
@@ -494,10 +609,36 @@ export function Sidebar() {
         </div>
       )}
 
-      {/* 素材库 / 提示词库 */}
-      <div className="sidebar__label">素材库 {materials.length > 0 && `（${materials.length}）`}</div>
-      <button className="chip chip--sm btn--block" onClick={() => setMaterialOpen((v) => !v)}>
-        {materialOpen ? "▾ 收起素材库" : "▸ 展开素材（点击插入提示词）"}
+      {/* 插件库：点击标题折叠/展开 */}
+      <button className="sidebar__toggle" onClick={() => setPluginOpen((v) => !v)}>
+        <span className="sidebar__toggle-arrow">{pluginOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">
+          插件库{extensions.length > 0 ? `（${extensions.length}）` : ""}
+        </span>
+      </button>
+      {pluginOpen && (
+        <div className="plugin-list">
+          {extensions.length === 0 ? (
+            <div className="sidebar__placeholder">
+              <p>暂无插件（扩展）</p>
+            </div>
+          ) : (
+            extensions.map((e, i) => (
+              <div key={i} className="plugin-item" title={e.path ?? ""}>
+                <div className="plugin-item__name">{e.name || e.path?.split(/[\\/]/).pop() || "插件"}</div>
+                {e.path && <div className="plugin-item__path">{e.path}</div>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* 素材库 / 提示词库：点击标题折叠/展开 */}
+      <button className="sidebar__toggle" onClick={() => setMaterialOpen((v) => !v)}>
+        <span className="sidebar__toggle-arrow">{materialOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">
+          素材库{materials.length > 0 ? `（${materials.length}）` : ""}
+        </span>
       </button>
       {materialOpen && (
         <div className="material-list">
@@ -532,45 +673,56 @@ export function Sidebar() {
         </div>
       )}
 
+      </div>
+
       <div className="sidebar__footer">
-        <div className="sidebar__footer-row">
-          <span>{busySwitch ? "切换中…" : "PI 桌面端"}</span>
-          <div className="sidebar__footer-btns">
-            <button
-              className="chip chip--sm"
-              onClick={() => setSettingsOpen(true)}
-              title="设置（模型提供商 / 通用 / 插件 / 关于）"
-            >
-              ⚙ 设置
-            </button>
-            <button
-              className="chip chip--sm"
-              onClick={() => setThemePicker((v) => !v)}
-              title="切换主题（浅色/深色/暖阳/薄荷/午夜紫/森林/海洋）"
-            >
-              {THEMES.find((t) => t.id === theme)?.label ?? "🎨 主题"}
-            </button>
-          </div>
+        <div className="sidebar__footer-btns">
+          <button
+            className="chip chip--sm"
+            onClick={() => setSettingsOpen(true)}
+            title="设置（模型提供商 / 通用 / 插件 / 关于）"
+          >
+            设置
+          </button>
+          <button
+            className="chip chip--sm"
+            onClick={() => setThemePicker((v) => !v)}
+            title="切换主题（浅色/深色/暖阳/薄荷/午夜紫/森林/海洋）"
+          >
+            {THEMES.find((t) => t.id === theme)?.label ?? "主题"}
+          </button>
+          <button
+            className="chip chip--sm"
+            onClick={() => {
+              void petToggleRequest(!petVisible).then((ok) => setPetVisible(ok));
+            }}
+            title="呼出 / 收起桌面宠物"
+          >
+            {petVisible ? "收起" : "桌宠"}
+          </button>
         </div>
         {themePicker && (
-          <div className="theme-picker">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                className={`theme-picker__item${t.id === theme ? " theme-picker__item--active" : ""}`}
-                onClick={() => {
-                  setTheme(t.id);
-                  applyTheme(t.id);
-                  setThemePicker(false);
-                }}
-              >
-                <span className="theme-picker__swatch" data-theme-preview={t.id} />
-                <span className="theme-picker__label">{t.label}</span>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="theme-pop-backdrop" onClick={() => setThemePicker(false)} />
+            <div className="theme-pop">
+              <div className="theme-pop__head">选择主题</div>
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  className={`theme-picker__item${t.id === theme ? " theme-picker__item--active" : ""}`}
+                  onClick={() => {
+                    setTheme(t.id);
+                    applyTheme(t.id);
+                    setThemePicker(false);
+                  }}
+                >
+                  <span className="theme-picker__swatch" data-theme-preview={t.id} />
+                  <span className="theme-picker__label">{t.label}</span>
+                </button>
+              ))}
+            </div>
+          </>
         )}
-        <div className="sidebar__hint">v0.2 · PI 驱动 · Ctrl+± 缩放</div>
       </div>
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
@@ -612,6 +764,40 @@ export function Sidebar() {
           }}
         />
       )}
+
+      {projCtx && (
+        <ProjectContextMenu
+          x={projCtx.x}
+          y={projCtx.y}
+          pinned={projPinned.has(projCtx.cwd)}
+          onClose={() => setProjCtx(null)}
+          onOpen={() => {
+            const cwd = projCtx.cwd;
+            setProjCtx(null);
+            if (currentCwd !== cwd) void switchProject(cwd);
+          }}
+          onTogglePin={() => {
+            toggleProjPin(projCtx.cwd);
+            setProjCtx(null);
+          }}
+          onNewSession={() => {
+            const cwd = projCtx.cwd;
+            setProjCtx(null);
+            if (currentCwd === cwd) newSession();
+            else void switchProject(cwd).then((ok) => {
+              if (ok) newSession();
+            });
+          }}
+          onRename={() => {
+            renameProj(projCtx.cwd);
+            setProjCtx(null);
+          }}
+          onCopyPath={() => {
+            void navigator.clipboard.writeText(projCtx.cwd).catch(() => {});
+            setProjCtx(null);
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -638,14 +824,15 @@ const SessionItem = memo(function SessionItem({
       title={s.path}
     >
       <div className="session-item__main">
-        <div className="session-item__title">
-          {pinned && <span className="session-item__pin">📌</span>}
-          {s.firstMessage || "（空会话）"}
-        </div>
-        <div className="session-item__meta">
-          {relTime(s.modified)}
-          {s.messageCount != null ? ` · ${s.messageCount} 条` : ""}
-        </div>
+        {pinned && (
+          <span className="session-item__pin">
+            <PinIcon />
+          </span>
+        )}
+        <span className="session-item__title">{s.firstMessage || "（空会话）"}</span>
+        <span className="session-item__count">
+          {s.messageCount != null ? `（${s.messageCount}）` : ""}
+        </span>
       </div>
       <div className="session-item__ops">
         <button
@@ -669,25 +856,30 @@ const ProjectItem = memo(function ProjectItem({
   isOpen,
   isActive,
   pinned,
+  displayName,
+  projPinned,
   onToggle,
   onSwitchProject,
   onNewSession,
   onSwitchSession,
   onCtx,
+  onProjCtx,
   activeFile,
 }: {
   p: ProjectNode;
   isOpen: boolean;
   isActive: boolean;
   pinned: Set<string>;
+  displayName: string;
+  projPinned: boolean;
   onToggle: (cwd: string) => void;
   onSwitchProject: (cwd: string) => Promise<boolean>;
   onNewSession: () => void;
   onSwitchSession: (path: string) => void;
   onCtx: (e: React.MouseEvent, s: PiSessionItem) => void;
+  onProjCtx: (e: React.MouseEvent, cwd: string) => void;
   activeFile: string | null;
 }) {
-  const [hover, setHover] = useState(false);
   // 会话排序结果缓存（置顶优先），避免每次渲染重新 sort
   const sessions = useMemo(
     () => [...p.sessions].sort((a, b) => Number(pinned.has(b.path)) - Number(pinned.has(a.path))),
@@ -702,26 +894,29 @@ const ProjectItem = memo(function ProjectItem({
       <div
         className={`project-item${isActive ? " project-item--active" : ""}`}
         onClick={() => onToggle(p.cwd)}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
+        onContextMenu={(e) => onProjCtx(e, p.cwd)}
         title={p.cwd}
       >
-        <span className="project-item__arrow">{isOpen ? "▾" : "▸"}</span>
+        {projPinned && (
+          <span className="project-item__pin">
+            <PinIcon />
+          </span>
+        )}
         <div className="project-item__main">
-          <div className="project-item__name">{projectShortName(p.cwd)}</div>
-          <div className="project-item__meta">
-            {p.sessions.length} 会话
-            {isActive ? " · 当前" : ""}
-          </div>
+          <span className="project-item__name">{displayName}</span>
+          <span className="project-item__count">（{p.sessions.length}）</span>
         </div>
-        {hover && (
-          <button className="project-item__add" title="在此项目新建会话" onClick={(e) => {
+        {isActive && <span className="project-item__tag">当前</span>}
+        <button
+          className="project-item__add"
+          title="在此项目新建会话"
+          onClick={(e) => {
             e.stopPropagation();
             handleNew();
-          }}>
-            ＋
-          </button>
-        )}
+          }}
+        >
+          ＋
+        </button>
       </div>
       {isOpen && (
         <div className="project-node__sessions">
@@ -741,14 +936,44 @@ const ProjectItem = memo(function ProjectItem({
               />
             ))
           )}
-          <button className="project-node__new" onClick={handleNew}>
-            ＋ 在此项目新建会话
-          </button>
         </div>
       )}
     </div>
   );
 });
+
+/** 项目右键菜单 */
+function ProjectContextMenu(props: {
+  x: number;
+  y: number;
+  pinned: boolean;
+  onClose: () => void;
+  onOpen: () => void;
+  onTogglePin: () => void;
+  onNewSession: () => void;
+  onRename: () => void;
+  onCopyPath: () => void;
+}) {
+  const style: React.CSSProperties = {
+    position: "fixed",
+    left: Math.min(props.x, window.innerWidth - 180),
+    top: Math.min(props.y, window.innerHeight - 240),
+  };
+  return (
+    <>
+      <div className="ctxmenu-backdrop" onClick={props.onClose} />
+      <div className="ctxmenu" style={style} onClick={(e) => e.stopPropagation()}>
+        <button className="ctxmenu__item" onClick={props.onOpen}><BubbleIcon /> 打开项目</button>
+        <button className="ctxmenu__item" onClick={props.onTogglePin}>
+          <PinIcon /> {props.pinned ? "取消置顶" : "置顶"}
+        </button>
+        <button className="ctxmenu__item" onClick={props.onNewSession}><PlusIcon /> 在此新建会话</button>
+        <button className="ctxmenu__item" onClick={props.onRename}><PencilIcon /> 重命名</button>
+        <button className="ctxmenu__item" onClick={props.onCopyPath}><LinkIcon /> 复制路径</button>
+      </div>
+    </>
+  );
+}
 
 /** 会话右键菜单 */
 function SessionContextMenu(props: {
@@ -771,12 +996,12 @@ function SessionContextMenu(props: {
     <>
       <div className="ctxmenu-backdrop" onClick={props.onClose} />
       <div className="ctxmenu" style={style} onClick={(e) => e.stopPropagation()}>
-        <button className="ctxmenu__item" onClick={props.onSwitch}>💬 打开会话</button>
+        <button className="ctxmenu__item" onClick={props.onSwitch}><BubbleIcon /> 打开会话</button>
         <button className="ctxmenu__item" onClick={props.onTogglePin}>
-          {props.pinned ? "📌 取消置顶" : "📌 置顶"}
+          <PinIcon /> {props.pinned ? "取消置顶" : "置顶"}
         </button>
-        <button className="ctxmenu__item" onClick={props.onRename}>✎ 重命名</button>
-        <button className="ctxmenu__item" onClick={props.onCopyPath}>🔗 复制路径</button>
+        <button className="ctxmenu__item" onClick={props.onRename}><PencilIcon /> 重命名</button>
+        <button className="ctxmenu__item" onClick={props.onCopyPath}><LinkIcon /> 复制路径</button>
         <button className="ctxmenu__item ctxmenu__item--danger" onClick={props.onDelete}>✕ 删除会话</button>
       </div>
     </>

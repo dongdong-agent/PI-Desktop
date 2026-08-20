@@ -28,6 +28,7 @@ pub fn run() {
             window_cmd::win_maximize,
             window_cmd::win_close,
             window_cmd::win_is_maximized,
+            window_cmd::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

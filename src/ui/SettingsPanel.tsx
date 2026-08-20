@@ -352,7 +352,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <span>默认思考级别</span>
                 <select
                   value={settings?.defaultThinkingLevel ?? ""}
-                  onChange={(e) => void changeSetting("defaultThinkingLevel", e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    void changeSetting("defaultThinkingLevel", v);
+                    // 同步运行时思考强度，输入区 ToolBar 立即跟随
+                    if (v) void usePiUiStore.getState().setThinking(v);
+                  }}
                 >
                   <option value="">（未设置）</option>
                   {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => (
@@ -395,7 +400,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
           {tab === "about" && (
             <div className="settings__about">
-              <div className="settings__about-logo">PI</div>
+              <div className="settings__about-logo">π</div>
               <div className="settings__about-name">PI Agent</div>
               <div className="settings__about-desc">底层驱动：真实 PI 终端（@earendil-works/pi-coding-agent）</div>
               <div className="settings__about-row">
