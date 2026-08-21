@@ -88,6 +88,113 @@ export function PiChatView() {
   }>({ open: false, items: [], index: 0 });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ---- 输入历史（↑/↓ 翻历史指令，localStorage 持久化） ----
+  const historyRef = useRef<string[]>([]);
+  if (historyRef.current.length === 0) {
+    // lazy 初始化（空历史合法，重载幂等）
+    try {
+      const raw = JSON.parse(localStorage.getItem("aiwb:cmd-history") ?? "[]") as string[];
+      historyRef.current = Array.isArray(raw) ? raw : [];
+    } catch {
+      historyRef.current = [];
+    }
+  }
+  const histIdxRef = useRef(-1); // -1 = 未在浏览历史
+  const draftRef = useRef(""); // 浏览历史前的输入草稿
+  const pushHistory = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const h = historyRef.current;
+    if (h[h.length - 1] === trimmed) return; // 连续重复去重
+    h.push(trimmed);
+    if (h.length > 200) h.splice(0, h.length - 200);
+    try {
+      localStorage.setItem("aiwb:cmd-history", JSON.stringify(h));
+    } catch {
+      /* ignore */
+    }
+    histIdxRef.current = -1;
+  }, []);
+  // 浏览历史时把光标移到末尾（React 受控 value 恢复后 selection 默认在开头）
+  const cursorToEnd = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      }
+    });
+  }, []);
+
+  // ---- 对话记录本地实时保存（自动/手动） ----
+  const [autoSave, setAutoSave] = useState(() => {
+    try {
+      return localStorage.getItem("aiwb:autosave") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const autoSaveRef = useRef(autoSave);
+  autoSaveRef.current = autoSave;
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const saveSessionMarkdown = useCallback(async (dir: string, filename: string): Promise<string | null> => {
+    try {
+      const res = await piSend({ type: "export_session", format: "markdown" });
+      if (!res?.success || !res.data?.content) return null;
+      const { join } = await import("@tauri-apps/api/path");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const full = await join(dir, filename);
+      await invoke("write_text_file", { path: full, content: res.data.content });
+      return full;
+    } catch {
+      return null;
+    }
+  }, []);
+  // 自动保存：每轮对话结束（agent_end）把最新全文写入 Documents/PI Agent 对话记录/
+  const autoExport = useCallback(async () => {
+    try {
+      const { documentDir } = await import("@tauri-apps/api/path");
+      const dir = await documentDir();
+      const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
+      const file = `${proj}-对话记录-${new Date().toISOString().slice(0, 10)}.md`;
+      const saved = await saveSessionMarkdown(`${dir}PI Agent 对话记录`, file);
+      if (saved) setLastSavedAt(Date.now());
+    } catch {
+      /* ignore */
+    }
+  }, [saveSessionMarkdown]);
+  const toggleAutoSave = useCallback(() => {
+    setAutoSave((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("aiwb:autosave", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+  // 手动保存：导出 markdown → 弹保存对话框写本地
+  const saveNow = useCallback(async () => {
+    try {
+      const res = await piSend({ type: "export_session", format: "markdown" });
+      if (!res?.success || !res.data?.content) return;
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const date = new Date().toISOString().slice(0, 10);
+      const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
+      const path = await save({
+        defaultPath: `${proj}-对话记录-${date}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return;
+      await invoke("write_text_file", { path, content: res.data.content });
+      setLastSavedAt(Date.now());
+    } catch {
+      /* ignore */
+    }
+  }, []);
   // 智能贴底：用户主动上滚时暂停自动跟随，滚回底部恢复
   const pinnedRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -150,7 +257,12 @@ export function PiChatView() {
   useEffect(() => {
     let disposed = false;
     void bindPiEvents((ev) => {
-      if (!disposed) handleEvent(ev);
+      if (disposed) return;
+      handleEvent(ev);
+      // 对话记录实时自动保存：每轮结束写最新全文（开关键在工具栏）
+      if (autoSaveRef.current && (ev?.type === "agent_end" || ev?.type === "agent_settled")) {
+        void autoExport();
+      }
     });
 
     // 拉取状态 + 历史消息
@@ -269,6 +381,10 @@ export function PiChatView() {
       if (!raw && imgs.length === 0) return;
       const sendWith = async () => {
         const content = raw;
+        // 发送即记入历史（↑/↓ 翻历史指令用）
+        pushHistory(content);
+        histIdxRef.current = -1;
+        draftRef.current = "";
         setInput("");
         setPendingImages([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
@@ -308,38 +424,33 @@ export function PiChatView() {
             if (res && res.success === false) {
               console.warn("[diag] prompt rejected: " + (res.error ?? ""));
               setUi((prev) => markLastError(prev, `发送被拒绝：${res.error ?? "未知原因"}`));
-            } else {
-              console.warn("[diag] prompt accepted");
             }
           })
           .catch((e) => {
             console.warn("[diag] prompt send error: " + String(e));
             setUi((prev) => markLastError(prev, String(e)));
           });
-        // 无响应诊断：10 秒后无条件打印事件流与探活状态
+        // 无响应诊断：10 秒后若仍未收到任何事件，才提示（正常流式不打扰）
         window.clearTimeout(diagTimerRef.current);
         diagTimerRef.current = window.setTimeout(async () => {
           const types = window.__piDiagEvents ? [...window.__piDiagEvents].join(",") : "(无)";
           const got = lastEventRef.current !== lastActivity;
-          console.warn(
-            "[diag] 10s: 收到事件=" + got + " 类型=[" + types + "] busy=" + uiRef.current.busy + " msgCount=" + uiRef.current.messages.length,
-          );
+          if (got || uiRef.current.busy) return; // 有事件/仍在忙 → 正常，不打扰
+          // 完全静默：仅 console 保留一条探活，供排查
           try {
             const st = await piSend({ type: "get_state" });
             console.warn(
-              "[diag] state: streaming=" + st?.data?.isStreaming + " model=" + st?.data?.model + " err=" + (st?.data?.errorMessage ?? "无") + " msgCount=" + st?.data?.messageCount,
+              "[diag] 发送 10s 无事件: streaming=" + st?.data?.isStreaming + " err=" + (st?.data?.errorMessage ?? "无"),
             );
-          } catch (e) {
-            console.warn("[diag] state 探活失败: " + String(e));
+          } catch {
+            /* ignore */
           }
-          if (!got && !uiRef.current.busy) {
-            setUi((prev) =>
-              markLastError(
-                prev,
-                "已发送但 10 秒内未收到 PI 响应（事件流: " + types + "）。请点「停止」后重发，或重启窗口。",
-              ),
-            );
-          }
+          setUi((prev) =>
+            markLastError(
+              prev,
+              "已发送但 10 秒内未收到 PI 响应（事件流: " + types + "）。请点「停止」后重发，或重启窗口。",
+            ),
+          );
         }, 10000);
       };
       void sendWith();
@@ -537,6 +648,35 @@ export function PiChatView() {
                       return;
                     }
                   }
+                  // ↑/↓：翻历史指令（无补全弹出时）
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    const h = historyRef.current;
+                    if (h.length === 0) return;
+                    if (histIdxRef.current === -1) {
+                      draftRef.current = inputRef.current?.value ?? input; // 保存当前输入
+                      histIdxRef.current = h.length - 1;
+                    } else if (histIdxRef.current > 0) {
+                      histIdxRef.current--;
+                    }
+                    setInput(h[histIdxRef.current]);
+                    cursorToEnd();
+                    return;
+                  }
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    const h = historyRef.current;
+                    if (histIdxRef.current === -1) return;
+                    if (histIdxRef.current < h.length - 1) {
+                      histIdxRef.current++;
+                      setInput(h[histIdxRef.current]);
+                    } else {
+                      histIdxRef.current = -1;
+                      setInput(draftRef.current);
+                    }
+                    cursorToEnd();
+                    return;
+                  }
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
                     send();
@@ -555,7 +695,13 @@ export function PiChatView() {
             )}
           </div>
 
-          <ToolBar onTree={() => setTreeOpen(true)} />
+          <ToolBar
+            onTree={() => setTreeOpen(true)}
+            onSave={() => void saveNow()}
+            autoSave={autoSave}
+            onToggleAutoSave={toggleAutoSave}
+            lastSavedAt={lastSavedAt}
+          />
         </div>
 
         <ToolTimeline tools={ui.tools} />
@@ -814,7 +960,19 @@ function BlockView({ block }: { block: PiBlock }) {
 /**
  * 输入框下方工具栏：项目选择 + 模型选择。
  */
-const ToolBar = memo(function ToolBar({ onTree }: { onTree: () => void }) {
+const ToolBar = memo(function ToolBar({
+  onTree,
+  onSave,
+  autoSave,
+  onToggleAutoSave,
+  lastSavedAt,
+}: {
+  onTree: () => void;
+  onSave: () => void;
+  autoSave: boolean;
+  onToggleAutoSave: () => void;
+  lastSavedAt: number | null;
+}) {
   const projects = usePiUiStore((s) => s.projects);
   const currentCwd = usePiUiStore((s) => s.currentCwd);
   const switchProject = usePiUiStore((s) => s.switchProject);
@@ -995,6 +1153,26 @@ const ToolBar = memo(function ToolBar({ onTree }: { onTree: () => void }) {
       >
         🌳 会话树
       </button>
+
+      <button
+        className="chip chip--sm"
+        onClick={onSave}
+        title="保存当前对话为 Markdown（本地导出全文）"
+      >
+        💾 保存对话
+      </button>
+      <button
+        className={`chip chip--sm${autoSave ? " chip--active" : ""}`}
+        onClick={onToggleAutoSave}
+        title="自动保存：每轮对话结束自动写入 文档/PI Agent 对话记录/（按项目+日期命名，保持最新）"
+      >
+        ⏺ 自动保存{autoSave ? "·开" : "·关"}
+      </button>
+      {lastSavedAt && (
+        <span className="toolbar__stat" title="最近一次保存时间">
+          💾 {new Date(lastSavedAt).toLocaleTimeString()}
+        </span>
+      )}
 
       <div className="toolbar__right">
         {loading && <span className="toolbar__hint">切换中…</span>}

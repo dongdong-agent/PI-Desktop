@@ -316,7 +316,7 @@ export function Sidebar() {
             if (ok && lastSession) {
               void piSend({ type: "switch_session", sessionPath: lastSession }).then((r) => {
                 if (r?.success) {
-                  usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null });
+                  usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null, currentCwd: r.data?.cwd ?? null });
                   void refresh();
                   notifySessionChanged();
                 }
@@ -326,7 +326,7 @@ export function Sidebar() {
         } else if (lastSession) {
           void piSend({ type: "switch_session", sessionPath: lastSession }).then((r) => {
             if (r?.success) {
-              usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null });
+              usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null, currentCwd: r.data?.cwd ?? null });
               void refresh();
               notifySessionChanged();
             }
@@ -465,7 +465,7 @@ export function Sidebar() {
         .then((res) => {
           if (res?.success) {
             // 对话池：记录新激活的对话 id（事件过滤/指令路由用）
-            usePiUiStore.setState({ currentDialogueId: res.data?.dialogueId ?? null });
+            usePiUiStore.setState({ currentDialogueId: res.data?.dialogueId ?? null, currentCwd: res.data?.cwd ?? null });
             void refresh();
             notifySessionChanged();
           }

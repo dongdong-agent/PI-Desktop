@@ -147,6 +147,85 @@ function newDialogueId() {
   return `dlg-${Date.now().toString(36)}-${++dialogueSeq}`;
 }
 
+/** content（数组或字符串）→ 纯文本（图片标注、忽略其他非文本块） */
+function contentToText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((c) => {
+      if (c?.type === "text") return c.text ?? "";
+      if (c?.type === "thinking") return `[思考] ${c.thinking ?? ""}`;
+      if (c?.type === "image") return "[图片]";
+      if (c?.type === "toolResult") return typeof c.content === "string" ? c.content : "[工具结果]";
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** 会话消息 → Markdown（导出/实时保存用） */
+function messagesToMarkdown(msgs, meta = {}) {
+  const L = [];
+  L.push("# PI Agent 对话记录");
+  L.push("");
+  if (meta.cwd) L.push(`- 项目：\`${meta.cwd}\``);
+  if (meta.sessionFile) L.push(`- 会话：\`${meta.sessionFile}\``);
+  if (meta.model) L.push(`- 模型：${meta.model}`);
+  L.push(`- 导出时间：${new Date().toLocaleString()}`);
+  L.push("");
+  L.push("---");
+  L.push("");
+  for (const m of msgs ?? []) {
+    const role = m?.role;
+    if (role === "user") {
+      const text = contentToText(m.content);
+      if (text) {
+        L.push("## 👤 用户");
+        L.push("");
+        L.push(text);
+        L.push("");
+      }
+    } else if (role === "assistant") {
+      const parts = Array.isArray(m.content) ? m.content : [];
+      const think = parts.filter((p) => p?.type === "thinking").map((p) => p.thinking ?? "").join("\n\n");
+      const text = parts.filter((p) => p?.type === "text").map((p) => p.text ?? "").join("\n\n");
+      const toolCalls = parts.filter((p) => p?.type === "toolCall");
+      if (think) {
+        L.push("<details><summary>💭 思考</summary>");
+        L.push("");
+        L.push(think);
+        L.push("</details>");
+        L.push("");
+      }
+      if (text) {
+        L.push("## 🤖 PI");
+        L.push("");
+        L.push(text);
+        L.push("");
+      }
+      for (const tc of toolCalls) {
+        L.push(`**工具调用：\`${tc.name ?? ""}\`**`);
+        L.push("");
+        L.push("```json");
+        L.push(JSON.stringify(tc.arguments ?? {}, null, 2));
+        L.push("```");
+        L.push("");
+      }
+    } else if (role === "toolResult") {
+      const text = contentToText(m.content);
+      if (text) {
+        L.push(`**工具结果${m.toolName ? `（${m.toolName}）` : ""}${m.isError ? " ⚠️" : ""}**`);
+        L.push("");
+        L.push("```");
+        L.push(text);
+        L.push("```");
+        L.push("");
+      }
+    }
+  }
+  return L.join("\n");
+}
+
 /** 取对话：id 为空时取当前激活对话；找不到返回 null */
 function getDialogue(id) {
   if (id) return dialogues.get(id) ?? null;
@@ -193,6 +272,10 @@ async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, request
     sessionManager = pi.SessionManager.create(targetCwd);
   }
 
+  // 会话真实 cwd：SessionManager.open 会从会话文件 header 恢复（cwdOverride 未传时），
+  // 例如 switch_session 不带 cwd 时也指向正确项目，避免错成 sidecar 启动目录。
+  const effectiveCwd = sessionManager?.cwd ?? targetCwd;
+
   const { createAgentSessionRuntime, createAgentSessionFromServices, createAgentSessionServices } = pi;
   const createRuntime = async ({ cwd: rtCwd, sessionManager: rtSm, sessionStartEvent }) => {
     const services = await createAgentSessionServices({ cwd: rtCwd });
@@ -203,7 +286,7 @@ async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, request
     };
   };
   const runtime = await createAgentSessionRuntime(createRuntime, {
-    cwd: targetCwd,
+    cwd: effectiveCwd,
     agentDir: targetAgentDir,
     sessionManager,
   });
@@ -223,7 +306,7 @@ async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, request
   const dialogue = {
     id,
     runtime,
-    cwd: targetCwd,
+    cwd: effectiveCwd,
     // 记录实际会话文件（new/recent/memory 打开时请求无 sessionPath，
     // 但 runtime 落盘后 sessionFile 才有值；用真实文件才能命中复用检查）
     sessionPath: sessionPath ?? session.sessionFile ?? null,
@@ -238,14 +321,14 @@ async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, request
   dialogue.unsubscribe = subscribeDialogue(session, id);
   dialogues.set(id, dialogue);
   currentDialogueId = id;
-  currentCwd = targetCwd;
+  currentCwd = effectiveCwd;
   initialized = true;
 
-  const state = snapshotState(session, targetCwd);
+  const state = snapshotState(session, effectiveCwd);
   sendResponse(requestId, "open_dialogue", true, {
     dialogueId: id,
     reused: false,
-    cwd: targetCwd,
+    cwd: effectiveCwd,
     overload: dialogues.size > 6,
     sessionId: state.sessionId,
     sessionFile: state.sessionFile,
@@ -1106,6 +1189,37 @@ async function handleCommand(cmd) {
         } catch (e) {
           sendResponse(requestId, "delete_project", false, undefined,
             e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "export_session": {
+        // 导出当前会话全文：markdown（阅读用）/ jsonl（备份/迁移，含全部分支 entry）
+        const dlg = getDialogue(cmd.dialogueId);
+        if (!dlg) {
+          sendResponse(requestId, "export_session", false, undefined, "对话不存在或未激活");
+          break;
+        }
+        const session = dlg.runtime.session;
+        const format = cmd.format ?? "markdown";
+        if (format === "jsonl") {
+          const sm = session?.sessionManager;
+          const entries = sm?.fileEntries ?? [];
+          sendResponse(requestId, "export_session", true, {
+            content: entries.map((e) => JSON.stringify(e)).join("\n"),
+            ext: "jsonl",
+            messageCount: entries.length,
+          });
+        } else {
+          sendResponse(requestId, "export_session", true, {
+            content: messagesToMarkdown(session?.messages ?? [], {
+              cwd: dlg.cwd,
+              sessionFile: session?.sessionFile ?? null,
+              model: session?.agent?.state?.model?.id ?? null,
+            }),
+            ext: "md",
+            messageCount: session?.messages?.length ?? 0,
+          });
         }
         break;
       }
