@@ -62,6 +62,26 @@ function useZoomShortcut(): void {
   }, []);
 }
 
+/** F12 打开开发者工具（仅 Tauri 环境，便于调试） */
+function useDevtoolsShortcut(): void {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "F12") return;
+      e.preventDefault();
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("open_devtools");
+        } catch {
+          /* 非 Tauri 环境忽略 */
+        }
+      })();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+}
+
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -101,6 +121,8 @@ export default function App() {
 
   // Ctrl/Cmd + +/-/0 缩放
   useZoomShortcut();
+  // F12 开发者工具
+  useDevtoolsShortcut();
 
   return (
     <ErrorBoundary>

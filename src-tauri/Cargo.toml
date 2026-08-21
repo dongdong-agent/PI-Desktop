@@ -1,6 +1,6 @@
 [package]
 name = "agent-workbench"
-version = "0.3.5"
+version = "0.3.7"
 description = "AI 工作台 - 个人 AI Agent 桌面工作台"
 authors = ["vista"]
 edition = "2021"
@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools", "unstable"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

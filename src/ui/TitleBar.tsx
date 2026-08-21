@@ -23,6 +23,13 @@ export function TitleBar() {
       <div className="titlebar__controls">
         <button
           className="titlebar__btn"
+          title="新建窗口（干净启动，不含上次项目/会话）"
+          onClick={() => void invoke("win_new").catch(() => {})}
+        >
+          ◈
+        </button>
+        <button
+          className="titlebar__btn"
           title="最小化"
           onClick={() => void invoke("win_minimize").catch(() => {})}
         >

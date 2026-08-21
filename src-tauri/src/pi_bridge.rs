@@ -152,13 +152,18 @@ impl PiBridge {
             }
         });
 
-        // stdout 逐行转发
+        // stdout 逐行转发；只转发合法 JSON 行，过滤 pi 内部杂讯（如 "[pi-reasonix] Loaded…"）
         let tx2 = tx.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(l) => {
+                        if serde_json::from_str::<serde_json::Value>(&l).is_err() {
+                            // 非 JSON 行（pi 包 console 杂讯）直接丢弃，不污染事件流
+                            println!("[sidecar-stdout-ignored] {l}");
+                            continue;
+                        }
                         if tx2.send(l).is_err() {
                             break;
                         }

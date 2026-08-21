@@ -562,6 +562,28 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "get_core_version": {
+        // 返回 PI 内核（捆绑 pi-package）的版本，用于「关于/检查更新」
+        try {
+          let version = "未知";
+          let source = null;
+          const dist = process.env.PI_GUI_PI_DIST;
+          if (dist) {
+            const pkg = path.resolve(path.dirname(dist), "package.json");
+            if (existsSync(pkg)) {
+              const p = JSON.parse(await fs.readFile(pkg, "utf8"));
+              version = p.version || "未知";
+              source = "bundled";
+            }
+          }
+          sendResponse(requestId, "get_core_version", true, { version, source });
+        } catch (e) {
+          sendResponse(requestId, "get_core_version", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "get_settings": {
         const sm = runtime?.services?.settingsManager;
         const s = {

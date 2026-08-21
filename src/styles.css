@@ -978,6 +978,59 @@ body {
 
 /* ---------- Provider 选择器 ---------- */
 
+.settings__common {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.settings__common-head {
+  font-size: 0.8571rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.settings__common-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.settings__common-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.settings__common-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings__common-name {
+  font-size: 0.8571rem;
+  font-weight: 650;
+}
+
+.settings__common-desc {
+  font-size: 0.7857rem;
+  color: var(--text-dim);
+}
+
+.settings__common-item .chip {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* ---------- Provider 选择器 ---------- */
+
 .picker {
   position: relative;
 }
@@ -1338,6 +1391,64 @@ body {
 }
 
 /* 项目列表 */
+
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 0;
+}
+
+.workspace-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: all 0.12s ease;
+}
+
+.workspace-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-dim);
+}
+
+.workspace-item__name {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.8571rem;
+  font-weight: 500;
+}
+
+.workspace-item__count {
+  flex-shrink: 0;
+  font-size: 0.6429rem;
+  color: var(--text-dim);
+  opacity: 0.65;
+}
+
+.workspace-item__del {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.8571rem;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.workspace-item__del:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
 
 .project-tree {
   display: flex;
@@ -2150,6 +2261,14 @@ body {
   font-size: 0.8571rem;
   color: var(--text-dim);
   margin-bottom: 12px;
+}
+
+.settings__about-hint {
+  font-size: 0.7857rem;
+  color: var(--text-dim);
+  text-align: center;
+  opacity: 0.85;
+  max-width: 320px;
 }
 
 .settings__about-row {

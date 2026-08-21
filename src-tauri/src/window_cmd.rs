@@ -45,3 +45,33 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     }
     std::fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))
 }
+
+/// 打开开发者工具（F12 调试）
+#[tauri::command]
+pub fn open_devtools(app: AppHandle) -> Result<(), String> {
+    let wv = app.get_webview("main").ok_or("主窗口不存在")?;
+    wv.open_devtools();
+    Ok(())
+}
+
+/// 新建窗口：干净启动（?fresh=1，前端据此跳过“上次项目/会话”恢复），方便新建工作区或打开新项目。
+#[tauri::command]
+pub fn win_new(app: AppHandle) -> Result<(), String> {
+    if app.get_webview_window("new").is_some() {
+        return Ok(()); // 已存在则复用，避免同 label 冲突
+    }
+    let label = "new";
+    let _w = tauri::WebviewWindowBuilder::new(
+        &app,
+        label,
+        tauri::WebviewUrl::App("index.html?fresh=1".into()),
+    )
+    .title("PI Agent")
+    .inner_size(1080.0, 720.0)
+    .min_inner_size(900.0, 600.0)
+    .decorations(false)
+    .transparent(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}

@@ -42,6 +42,28 @@ interface ProviderItem {
   authed: boolean;
 }
 
+/** 常用提供商（内置，便于直达申请页面） */
+const COMMON_PROVIDERS = [
+  { id: "deepseek", name: "DeepSeek", applyUrl: "https://platform.deepseek.com/api_keys", desc: "deepseek-chat / deepseek-reasoner" },
+  { id: "volc", name: "火山方舟 · 豆包", applyUrl: "https://console.volcengine.com/ark", desc: "doubao 系列" },
+  { id: "openai", name: "OpenAI", applyUrl: "https://platform.openai.com/api-keys", desc: "gpt-4o / gpt-4.1 等" },
+  { id: "moonshot", name: "Kimi · Moonshot", applyUrl: "https://platform.moonshot.cn/console/api-keys", desc: "moonshot-v1-*" },
+  { id: "zhipu", name: "智谱 · BigModel", applyUrl: "https://open.bigmodel.cn/usercenter/apikeys", desc: "glm-4-*" },
+  { id: "qwen", name: "通义千问 · DashScope", applyUrl: "https://bailian.console.aliyun.com", desc: "qwen-*" },
+  { id: "gemini", name: "Google Gemini", applyUrl: "https://aistudio.google.com/apikey", desc: "gemini-*" },
+  { id: "anthropic", name: "Anthropic Claude", applyUrl: "https://console.anthropic.com/keys", desc: "claude-*" },
+];
+
+/** 打开外部链接（Tauri 环境用 opener，网页预览降级 window.open） */
+async function openExtUrl(url: string): Promise<void> {
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+
 interface PiSettings {
   defaultModel?: string | null;
   defaultProvider?: string | null;
@@ -67,6 +89,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [apiKey, setApiKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [settings, setSettings] = useState<PiSettings | null>(null);
+  const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState("");
   const [extensions, setExtensions] = useState<ExtensionItem[]>([]);
   const [reloading, setReloading] = useState(false);
@@ -102,6 +125,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
       if (s?.success) setSettings(s.data ?? {});
       if (c?.success) setExtensions(c.data?.extensions ?? []);
+      // 拉取 PI 内核版本（关于页/检查更新）
+      const v = await piSend({ type: "get_core_version" }).catch(() => null);
+      if (v?.success) setCoreVersion(v.data?.version ?? null);
     } catch {
       /* 桥未就绪 */
     }
@@ -247,6 +273,26 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
+              <div className="settings__common">
+                <div className="settings__common-head">常用提供商（点「申请密钥」直达官方页面）</div>
+                <div className="settings__common-grid">
+                  {COMMON_PROVIDERS.map((cp) => {
+                    const authed = providers.some((p) => p.id === cp.id && p.authed);
+                    return (
+                      <div key={cp.id} className="settings__common-item">
+                        <div className="settings__common-top">
+                          <span className="settings__common-name">{cp.name}</span>
+                          {authed && <span className="settings__badge settings__badge--ok">已认证</span>}
+                        </div>
+                        <div className="settings__common-desc">{cp.desc}</div>
+                        <button className="chip chip--sm" onClick={() => void openExtUrl(cp.applyUrl)}>
+                          申请密钥 ↗
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="settings__provider-list">
                 {filtered.map((p) => (
                   <div
@@ -414,6 +460,20 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <div className="settings__about-row">
                 <span>已认证</span>
                 <b>{providers.filter((p) => p.authed).length}</b>
+              </div>
+              <div className="settings__about-row">
+                <span>PI 内核版本</span>
+                <b>{coreVersion ?? "—"}</b>
+              </div>
+              <button
+                className="chip chip--sm"
+                style={{ alignSelf: "center" }}
+                onClick={() => void openExtUrl("https://www.npmjs.com/package/@earendil-works/pi-coding-agent")}
+              >
+                🔎 查看 PI 内核更新 ↗
+              </button>
+              <div className="settings__about-hint">
+                升级内核需重新打包/安装新版安装包；本页可查看最新版本与变更。
               </div>
             </div>
           )}
