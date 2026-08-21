@@ -50,9 +50,9 @@ export function Sidebar() {
   const [petVisible, setPetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addProjectOpen, setAddProjectOpen] = useState(false);
-  const [projectsOpen, setProjectsOpen] = useState(true); // 项目区默认展开，可点标题折叠
   const [allSessionsOpen, setAllSessionsOpen] = useState(true); // 未分类对话区默认展开
-  // 工作区视图：按项目 / 按进行中对话（对话池）
+  // 工作区（顶层）：可折叠；其下分「按项目 / 按进行中对话」两种视图（对话池）
+  const [wsOpen, setWsOpen] = useState(true);
   const [wsView, setWsView] = useState<"projects" | "dialogues">(() => {
     try {
       const v = localStorage.getItem("aiwb:ws-view");
@@ -62,7 +62,6 @@ export function Sidebar() {
     }
     return "projects";
   });
-  const [dialoguesOpen, setDialoguesOpen] = useState(true);
   const setWsViewPersist = useCallback((v: "projects" | "dialogues") => {
     setWsView(v);
     try {
@@ -637,25 +636,30 @@ export function Sidebar() {
       )}
 
       {/* 工作区：当前项目集（自动保存）；标题行切「按项目 / 按对话中」两种视图；＋ 添加项目目录 */}
+      {/* 工作区（顶层）：点击标题折叠/展开；内容顶部切「按项目 / 按对话中」两种视图；＋ 添加项目目录 */}
       <div
         className="sidebar__toggle sidebar__toggle--row"
         role="button"
-        title={
-          wsView === "projects"
-            ? projectsOpen
-              ? "折叠项目列表"
-              : "展开项目列表"
-            : dialoguesOpen
-              ? "折叠对话列表"
-              : "展开对话列表"
-        }
-        onClick={() =>
-          wsView === "projects" ? setProjectsOpen((v) => !v) : setDialoguesOpen((v) => !v)
-        }
+        title={wsOpen ? "折叠工作区" : "展开工作区"}
+        onClick={() => setWsOpen((v) => !v)}
       >
-        <span className="sidebar__toggle-arrow">
-          {wsView === "projects" ? (projectsOpen ? "▾" : "▸") : dialoguesOpen ? "▾" : "▸"}
-        </span>
+        <span className="sidebar__toggle-arrow">{wsOpen ? "▾" : "▸"}</span>
+        <span className="sidebar__toggle-label">工作区</span>
+        <button
+          className="sidebar__add"
+          title="添加项目目录"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (wsView === "dialogues") setWsViewPersist("projects");
+            setAddProjectOpen(true);
+          }}
+        >
+          ＋
+        </button>
+      </div>
+      {wsOpen && (
+      <div className="sidebar__sub">
+        {/* 视图切换：按项目 / 按进行中对话 */}
         <div className="ws-seg" onClick={(e) => e.stopPropagation()}>
           <button
             className={`ws-seg__btn${wsView === "projects" ? " ws-seg__btn--active" : ""}`}
@@ -670,19 +674,7 @@ export function Sidebar() {
             对话中
           </button>
         </div>
-        <button
-          className="sidebar__add"
-          title="添加项目目录"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (wsView === "dialogues") setWsViewPersist("projects");
-            setAddProjectOpen(true);
-          }}
-        >
-          ＋
-        </button>
-      </div>
-      {wsView === "dialogues" && dialoguesOpen && (
+      {wsView === "dialogues" ? (
         <nav className="session-list session-list--tree">
           <DialogueList
             dialogues={dialogues}
@@ -690,9 +682,7 @@ export function Sidebar() {
             onClose={(id) => void closeDialogue(id)}
           />
         </nav>
-      )}
-      {wsView === "projects" && projectsOpen && (
-      <div className="sidebar__sub">
+      ) : (
       <nav className="project-tree">
         {projects.length === 0 ? (
           <div className="sidebar__placeholder">
@@ -719,6 +709,7 @@ export function Sidebar() {
           ))
         )}
       </nav>
+      )}
       </div>
       )}
 

@@ -1510,10 +1510,9 @@ body {
 /* ---- 工作区视图切换（按项目 / 按对话中） ---- */
 .ws-seg {
   display: flex;
-  flex: 1;
-  min-width: 0;
   gap: 2px;
   padding: 2px;
+  margin: 4px 0 6px;
   border-radius: var(--radius-sm);
   background: var(--bg-subtle, var(--bg-hover));
   box-sizing: border-box;
