@@ -354,7 +354,7 @@ export function Sidebar() {
     };
   }, [refresh, refreshCommands, loadAll]);
 
-  // 「对话中」列表：事件驱动刷新（状态类事件节流 400ms；高频 delta 事件忽略）
+  // 「进行中」列表：事件驱动刷新（状态类事件节流 400ms；高频 delta 事件忽略）
   useEffect(() => {
     let disposed = false;
     let timer = 0;
@@ -635,8 +635,8 @@ export function Sidebar() {
         <div className="sidebar__drop-hint">松开鼠标，将此文件夹添加为项目</div>
       )}
 
-      {/* 工作区：当前项目集（自动保存）；标题行切「按项目 / 按对话中」两种视图；＋ 添加项目目录 */}
-      {/* 工作区（顶层）：点击标题折叠/展开；内容顶部切「按项目 / 按对话中」两种视图；＋ 添加项目目录 */}
+      {/* 工作区：当前项目集（自动保存）；标题行切「按项目 / 按进行中」两种视图；＋ 添加项目目录 */}
+      {/* 工作区（顶层）：点击标题折叠/展开；内容顶部切「按项目 / 按进行中」两种视图；＋ 添加项目目录 */}
       <div
         className="sidebar__toggle sidebar__toggle--row"
         role="button"
@@ -671,7 +671,7 @@ export function Sidebar() {
             className={`ws-seg__btn${wsView === "dialogues" ? " ws-seg__btn--active" : ""}`}
             onClick={() => setWsViewPersist("dialogues")}
           >
-            对话中
+            进行中
           </button>
         </div>
       {wsView === "dialogues" ? (
@@ -982,7 +982,7 @@ export function Sidebar() {
   );
 }
 
-/** 对话中列表（对话池进行中的对话）：状态点 + 项目名 + 最后活动 + 当前标记 */
+/** 进行中列表（对话池进行中的对话）：状态点 + 项目名 + 最后活动 + 当前标记 */
 function DialogueList(props: {
   dialogues: DialogueItem[];
   onActivate: (dialogueId: string) => void;

@@ -1507,7 +1507,7 @@ body {
   transition: all 0.12s ease;
 }
 
-/* ---- 工作区视图切换（按项目 / 按对话中） ---- */
+/* ---- 工作区视图切换（按项目 / 按进行中） ---- */
 .ws-seg {
   display: flex;
   gap: 2px;
@@ -1543,7 +1543,7 @@ body {
   font-weight: 600;
 }
 
-/* ---- 对话中列表（对话池进行中的对话） ---- */
+/* ---- 进行中列表（对话池进行中的对话） ---- */
 .dlg-list {
   display: flex;
   flex-direction: column;
