@@ -266,6 +266,25 @@ async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, request
     sessionManager = pi.SessionManager.open(sessionPath);
   } else if (sessionMode === "recent") {
     sessionManager = pi.SessionManager.continueRecent(targetCwd);
+    // 复用检查（recent 模式）：该项目最近会话若已在池中 → 激活返回，避免重复打开同一会话
+    const f = sessionManager?.sessionFile ?? null;
+    if (f) {
+      for (const d of dialogues.values()) {
+        if (d.sessionPath === f) {
+          currentDialogueId = d.id;
+          currentCwd = d.cwd;
+          d.lastActive = Date.now();
+          sendResponse(requestId, "open_dialogue", true, {
+            dialogueId: d.id,
+            reused: true,
+            cwd: d.cwd,
+            overload: dialogues.size > 6,
+            state: snapshotState(d.runtime.session, d.cwd),
+          });
+          return d.id;
+        }
+      }
+    }
   } else if (sessionMode === "memory") {
     sessionManager = pi.SessionManager.inMemory(targetCwd);
   } else {

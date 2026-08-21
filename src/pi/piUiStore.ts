@@ -80,6 +80,24 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
   loadAll: async () => {
     set({ loading: true, error: null });
     try {
+      // 确保 sidecar 已初始化（对话池）：前端必须显式 open_dialogue，
+      // 否则后端「尚未 init」会拒绝所有项目/会话/prompt 命令 → 项目列表形同虚设。
+      // 优先恢复上次项目（recent），无则新建会话。
+      let lastCwd: string | null = null;
+      try {
+        lastCwd = localStorage.getItem("aiwb:last-cwd");
+      } catch {
+        /* ignore */
+      }
+      const initRes = await piSend({
+        type: "open_dialogue",
+        cwd: lastCwd ?? undefined,
+        sessionMode: lastCwd ? "recent" : "new",
+      }).catch(() => null);
+      if (initRes?.success && initRes.data?.dialogueId) {
+        set({ currentDialogueId: initRes.data.dialogueId });
+        if (initRes.data.cwd) set({ currentCwd: initRes.data.cwd });
+      }
       const [projRes, stateRes, modelRes] = await Promise.all([
         piSend({ type: "list_projects" }),
         piSend({ type: "get_state" }),
