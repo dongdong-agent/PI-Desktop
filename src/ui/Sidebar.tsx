@@ -5,8 +5,8 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
 import { loadZoom } from "../app/zoom";
-import { piSend } from "../pi/bridge";
-import { projectShortName, usePiUiStore } from "../pi/piUiStore";
+import { bindPiEvents, piSend } from "../pi/bridge";
+import { projectShortName, usePiUiStore, type DialogueItem } from "../pi/piUiStore";
 import { SettingsPanel } from "./SettingsPanel";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { SkillDialog } from "./SkillDialog";
@@ -52,6 +52,25 @@ export function Sidebar() {
   const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(true); // 项目区默认展开，可点标题折叠
   const [allSessionsOpen, setAllSessionsOpen] = useState(true); // 未分类对话区默认展开
+  // 工作区视图：按项目 / 按进行中对话（对话池）
+  const [wsView, setWsView] = useState<"projects" | "dialogues">(() => {
+    try {
+      const v = localStorage.getItem("aiwb:ws-view");
+      if (v === "projects" || v === "dialogues") return v;
+    } catch {
+      /* ignore */
+    }
+    return "projects";
+  });
+  const [dialoguesOpen, setDialoguesOpen] = useState(true);
+  const setWsViewPersist = useCallback((v: "projects" | "dialogues") => {
+    setWsView(v);
+    try {
+      localStorage.setItem("aiwb:ws-view", v);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // 工作区 = 当前项目集（自动保存为 aiwb:workspace 文档；显示即已保存，无需手动列表）
 
@@ -207,6 +226,9 @@ export function Sidebar() {
   };
 
   const currentCwd = usePiUiStore((s) => s.currentCwd);
+  const dialogues = usePiUiStore((s) => s.dialogues);
+  const activateDialogue = usePiUiStore((s) => s.activateDialogue);
+  const closeDialogue = usePiUiStore((s) => s.closeDialogue);
 
   // 工作区自动保存：项目集 + 当前项目 + 主题/缩放 快照（显示即已保存）
   useEffect(() => {
@@ -332,6 +354,50 @@ export function Sidebar() {
       window.removeEventListener("keydown", onKey);
     };
   }, [refresh, refreshCommands, loadAll]);
+
+  // 「对话中」列表：事件驱动刷新（状态类事件节流 400ms；高频 delta 事件忽略）
+  useEffect(() => {
+    let disposed = false;
+    let timer = 0;
+    const refreshDlg = () => {
+      void usePiUiStore.getState().refreshDialogues();
+    };
+    void bindPiEvents((ev) => {
+      if (disposed) return;
+      const t = ev?.type;
+      if (!t) return;
+      if (
+        [
+          "agent_start",
+          "agent_end",
+          "agent_settled",
+          "turn_start",
+          "turn_end",
+          "thinking_start",
+          "thinking_end",
+          "message_start",
+          "message_end",
+          "tool_execution_start",
+          "tool_execution_end",
+          "session_start",
+          "abort",
+        ].includes(t)
+      ) {
+        if (timer) return;
+        timer = window.setTimeout(() => {
+          timer = 0;
+          refreshDlg();
+        }, 400);
+      }
+    });
+    refreshDlg();
+    const iv = window.setInterval(refreshDlg, 15000); // 兜底轮询（最后活动时间刷新）
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+      window.clearInterval(iv);
+    };
+  }, []);
 
   const newSession = useCallback(() => {
     void piSend({ type: "new_session" }).then((res) => {
@@ -570,27 +636,62 @@ export function Sidebar() {
         <div className="sidebar__drop-hint">松开鼠标，将此文件夹添加为项目</div>
       )}
 
-      {/* 工作区：当前项目集（自动保存，显示即已保存）；＋ 添加项目目录 */}
+      {/* 工作区：当前项目集（自动保存）；标题行切「按项目 / 按对话中」两种视图；＋ 添加项目目录 */}
       <div
         className="sidebar__toggle sidebar__toggle--row"
         role="button"
-        title={projectsOpen ? "折叠项目列表" : "展开项目列表"}
-        onClick={() => setProjectsOpen((v) => !v)}
+        title={
+          wsView === "projects"
+            ? projectsOpen
+              ? "折叠项目列表"
+              : "展开项目列表"
+            : dialoguesOpen
+              ? "折叠对话列表"
+              : "展开对话列表"
+        }
+        onClick={() =>
+          wsView === "projects" ? setProjectsOpen((v) => !v) : setDialoguesOpen((v) => !v)
+        }
       >
-        <span className="sidebar__toggle-arrow">{projectsOpen ? "▾" : "▸"}</span>
-        <span className="sidebar__toggle-label">工作区</span>
+        <span className="sidebar__toggle-arrow">
+          {wsView === "projects" ? (projectsOpen ? "▾" : "▸") : dialoguesOpen ? "▾" : "▸"}
+        </span>
+        <div className="ws-seg" onClick={(e) => e.stopPropagation()}>
+          <button
+            className={`ws-seg__btn${wsView === "projects" ? " ws-seg__btn--active" : ""}`}
+            onClick={() => setWsViewPersist("projects")}
+          >
+            项目
+          </button>
+          <button
+            className={`ws-seg__btn${wsView === "dialogues" ? " ws-seg__btn--active" : ""}`}
+            onClick={() => setWsViewPersist("dialogues")}
+          >
+            对话中
+          </button>
+        </div>
         <button
           className="sidebar__add"
           title="添加项目目录"
           onClick={(e) => {
             e.stopPropagation();
+            if (wsView === "dialogues") setWsViewPersist("projects");
             setAddProjectOpen(true);
           }}
         >
           ＋
         </button>
       </div>
-      {projectsOpen && (
+      {wsView === "dialogues" && dialoguesOpen && (
+        <nav className="session-list session-list--tree">
+          <DialogueList
+            dialogues={dialogues}
+            onActivate={(id) => void activateDialogue(id)}
+            onClose={(id) => void closeDialogue(id)}
+          />
+        </nav>
+      )}
+      {wsView === "projects" && projectsOpen && (
       <div className="sidebar__sub">
       <nav className="project-tree">
         {projects.length === 0 ? (
@@ -887,6 +988,74 @@ export function Sidebar() {
         />
       )}
     </aside>
+  );
+}
+
+/** 对话中列表（对话池进行中的对话）：状态点 + 项目名 + 最后活动 + 当前标记 */
+function DialogueList(props: {
+  dialogues: DialogueItem[];
+  onActivate: (dialogueId: string) => void;
+  onClose: (dialogueId: string) => void;
+}) {
+  const { dialogues, onActivate, onClose } = props;
+  if (dialogues.length === 0) {
+    return (
+      <div className="sidebar__placeholder">
+        <p>暂无进行中的对话</p>
+        <p className="sidebar__placeholder--sub">切换项目/会话后这里会列出可随时切回的活动对话</p>
+      </div>
+    );
+  }
+  const statusText: Record<string, string> = {
+    flowing: "生成中",
+    thinking: "思考中",
+    idle: "空闲",
+  };
+  const relTime = (t: number) => {
+    const diff = Date.now() - t;
+    if (diff < 60_000) return "刚刚";
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+    return `${Math.floor(diff / 86_400_000)} 天前`;
+  };
+  return (
+    <div className="dlg-list">
+      {dialogues.map((d) => {
+        const st = d.status ?? "idle";
+        const label = statusText[st] ?? st;
+        return (
+          <div
+            key={d.dialogueId}
+            className={`dlg-item${d.isCurrent ? " dlg-item--active" : ""}`}
+            title={d.cwd}
+            onClick={() => onActivate(d.dialogueId)}
+          >
+            <span className={`dlg-item__dot dlg-item__dot--${st}`} />
+            <div className="dlg-item__main">
+              <div className="dlg-item__name">
+                {d.name || projectShortName(d.cwd)}
+                {d.isCurrent ? <span className="dlg-item__cur">当前</span> : null}
+              </div>
+              <div className="dlg-item__meta">
+                {label}
+                {st !== "idle" ? "…" : ""} · {relTime(d.lastActive)}
+                {d.model ? ` · ${d.model}` : ""}
+              </div>
+            </div>
+            <button
+              className="dlg-item__close"
+              title="关闭对话（后台释放）"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(d.dialogueId);
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

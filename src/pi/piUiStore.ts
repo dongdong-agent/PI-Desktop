@@ -16,6 +16,19 @@ export interface ModelItem {
   provider: string;
 }
 
+/** 对话池中的进行中对话（侧栏「对话中」视图） */
+export interface DialogueItem {
+  dialogueId: string;
+  cwd: string;
+  sessionPath: string | null;
+  name: string;
+  status: string; // flowing | thinking | idle
+  model: string | null;
+  provider: string | null;
+  lastActive: number;
+  isCurrent: boolean;
+}
+
 export interface SessionStats {
   totalMessages?: number;
   toolCalls?: number;
@@ -31,6 +44,8 @@ interface PiUiState {
   currentCwd: string | null;
   /** 当前激活对话 id（后端对话池）；事件按它过滤，指令带它路由 */
   currentDialogueId: string | null;
+  /** 进行中的对话列表（侧栏「对话中」视图，list_dialogues 结果） */
+  dialogues: DialogueItem[];
   models: ModelItem[];
   currentModelRef: string | null; // "provider/id" 组合（同 id 不同 provider 可区分）
   stats: SessionStats | null;
@@ -41,6 +56,9 @@ interface PiUiState {
   loadAll: () => Promise<void>;
   refreshStats: () => Promise<void>;
   switchProject: (cwd: string) => Promise<boolean>;
+  refreshDialogues: () => Promise<void>;
+  activateDialogue: (dialogueId: string) => Promise<boolean>;
+  closeDialogue: (dialogueId: string) => Promise<boolean>;
   setModel: (modelRef: string) => Promise<boolean>;
   setThinking: (level: string) => Promise<boolean>;
   compact: () => Promise<boolean>;
@@ -51,6 +69,7 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
   projects: [],
   currentCwd: null,
   currentDialogueId: null,
+  dialogues: [],
   models: [],
   currentModelRef: null,
   stats: null,
@@ -115,6 +134,68 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
       if (res?.success) set({ stats: res.data ?? null });
     } catch {
       /* ignore */
+    }
+  },
+
+  refreshDialogues: async () => {
+    try {
+      const res = await piSend({ type: "list_dialogues" });
+      if (res?.success) {
+        set({ dialogues: res.data?.dialogues ?? [] });
+        // 后端 currentDialogueId 与前端同步（启动时/重连后兜底）
+        const cur = res.data?.currentDialogueId ?? null;
+        if (cur && cur !== get().currentDialogueId) {
+          set({ currentDialogueId: cur });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  activateDialogue: async (dialogueId) => {
+    try {
+      const res = await piSend({ type: "activate_dialogue", dialogueId });
+      if (res?.success) {
+        set({
+          currentDialogueId: dialogueId,
+          currentCwd: res.data?.cwd ?? get().currentCwd,
+        });
+        void get().refreshDialogues();
+        window.dispatchEvent(new CustomEvent("pi:session-changed"));
+        return true;
+      }
+      set({ error: res?.error ?? "切换对话失败" });
+      return false;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
+  },
+
+  closeDialogue: async (dialogueId) => {
+    try {
+      const res = await piSend({ type: "close_dialogue", dialogueId });
+      if (res?.success) {
+        const wasCurrent = get().currentDialogueId === dialogueId;
+        set((s) => ({ dialogues: s.dialogues.filter((d) => d.dialogueId !== dialogueId) }));
+        if (wasCurrent) {
+          // 关闭的是当前对话：切到列表里另一个对话，否则置空
+          const next = get().dialogues[0] ?? null;
+          if (next) await get().activateDialogue(next.dialogueId);
+          else {
+            set({ currentDialogueId: null, currentCwd: null });
+            window.dispatchEvent(new CustomEvent("pi:session-changed"));
+          }
+        }
+        void get().refreshDialogues();
+        return true;
+      }
+      set({ error: res?.error ?? "关闭对话失败" });
+      return false;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
     }
   },
 

@@ -373,6 +373,24 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "activate_dialogue": {
+        // 侧栏「对话中」列表：切换激活指定对话（不新建，后台对话继续流式）
+        const d = dialogues.get(cmd.dialogueId);
+        if (!d) {
+          sendResponse(requestId, "activate_dialogue", false, undefined, "对话不存在");
+          break;
+        }
+        currentDialogueId = d.id;
+        currentCwd = d.cwd;
+        d.lastActive = Date.now();
+        sendResponse(requestId, "activate_dialogue", true, {
+          dialogueId: d.id,
+          cwd: d.cwd,
+          state: snapshotState(d.runtime.session, d.cwd),
+        });
+        break;
+      }
+
       case "prompt":
         {
           const dlg = getDialogue(cmd.dialogueId);
@@ -1172,6 +1190,7 @@ const STATEFUL_COMMANDS = new Set([
   "init",
   "open_dialogue",
   "close_dialogue",
+  "activate_dialogue",
   "prompt",
   "steer",
   "follow_up",
