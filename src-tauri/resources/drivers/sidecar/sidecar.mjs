@@ -75,12 +75,25 @@ function sendResponse(requestId, command, success, data, error) {
   send(payload);
 }
 
-function forwardEvent(event) {
+function forwardEvent(event, dialogueId = currentDialogueId) {
+  // 更新对话池状态（状态机：flowing/thinking/idle）与最后活动时间
+  const d = dialogueId ? dialogues.get(dialogueId) : null;
+  if (d) {
+    d.lastActive = Date.now();
+    const t = event?.type ?? "";
+    if (t === "agent_start") d.status = "flowing";
+    else if (t.startsWith("thinking")) d.status = "thinking";
+    else if (t === "agent_end" || t === "turn_end" || t === "session_end" || t === "abort") d.status = "idle";
+    if (!d.name && t === "user_message") {
+      const content = event?.message?.content;
+      if (typeof content === "string") d.name = content.slice(0, 24);
+    }
+  }
   try {
-    send({ type: "event", event });
+    send({ type: "event", dialogueId: dialogueId ?? null, event });
   } catch {
     try {
-      send({ type: "event", event: { type: event?.type ?? "unknown" } });
+      send({ type: "event", dialogueId: dialogueId ?? null, event: { type: event?.type ?? "unknown" } });
     } catch {
       log("事件序列化失败");
     }
@@ -92,23 +105,21 @@ function forwardEvent(event) {
 // ---------------------------------------------------------------------------
 
 let pi = null; // PI SDK 模块
-let runtime = null; // AgentSessionRuntime
-let session = null; // 当前 AgentSession
-let unsubscribe = null;
 let initialized = false;
-let currentCwd = null; // 当前项目 cwd（handleInit 设置，list_sessions 依赖）
+let currentCwd = null; // 当前项目 cwd（openDialogue 设置，list_sessions 依赖）
+// 对话池：每对话 = 一个独立 AgentSessionRuntime（并行对话的地基）。
+// 切对话不再销毁旧 runtime，后台可继续流式。
+const dialogues = new Map(); // dialogueId -> Dialogue
+let currentDialogueId = null; // 当前激活对话（前端 UI 绑定；旧命令默认操作它）
+let dialogueSeq = 0;
 
 // ---------------------------------------------------------------------------
 // 3) 会话事件订阅（runtime 更换 session 后必须重新订阅 —— 官方约定）
 // ---------------------------------------------------------------------------
 
-function attachSessionWatcher(target) {
-  if (unsubscribe) {
-    unsubscribe();
-    unsubscribe = null;
-  }
-  unsubscribe = target.subscribe((event) => {
-    forwardEvent(event);
+function subscribeDialogue(session, dialogueId) {
+  return session.subscribe((event) => {
+    forwardEvent(event, dialogueId);
   });
 }
 
@@ -116,12 +127,13 @@ function attachSessionWatcher(target) {
 // 4) 指令处理
 // ---------------------------------------------------------------------------
 
-function snapshotState(s) {
+function snapshotState(s, fallbackCwd = null) {
   const agentState = s.agent?.state;
   return {
     sessionId: s.sessionId,
     sessionFile: s.sessionFile ?? null,
-    cwd: agentState?.cwd ?? null,
+    // 恢复会话时 agentState.cwd 可能为空，用对话自身 cwd 兜底（前端 currentCwd 依赖它）
+    cwd: agentState?.cwd ?? fallbackCwd ?? null,
     isStreaming: s.isStreaming ?? false,
     messageCount: s.messages?.length ?? 0,
     model: agentState?.model?.id ?? null,
@@ -131,20 +143,57 @@ function snapshotState(s) {
   };
 }
 
-async function handleInit(payload, requestId) {
-  const cwd = payload.cwd ?? process.cwd();
-  const agentDir = payload.agentDir ?? pi.getAgentDir();
+function newDialogueId() {
+  return `dlg-${Date.now().toString(36)}-${++dialogueSeq}`;
+}
 
-  const mode = payload.sessionMode ?? "new";
+/** 取对话：id 为空时取当前激活对话；找不到返回 null */
+function getDialogue(id) {
+  if (id) return dialogues.get(id) ?? null;
+  return currentDialogueId ? (dialogues.get(currentDialogueId) ?? null) : null;
+}
+
+/**
+ * 打开/激活一个对话（每对话 = 独立 AgentSessionRuntime，并行对话核心）。
+ * - 同 sessionPath 已存在 → 直接激活复用（避免同一会话被两个 runtime 打开冲突）
+ * - sessionPath 空 + sessionMode="recent" → 该项目最近会话
+ * - 其余 → 新建会话
+ * 旧的对话不销毁，保留后台继续流式。
+ */
+async function openDialogue({ cwd, agentDir, sessionPath, sessionMode }, requestId) {
+  const targetCwd = cwd ?? process.cwd();
+  const targetAgentDir = agentDir ?? pi.getAgentDir();
+
+  // 复用：同 sessionPath 已有对话 → 激活并返回（避免同一会话被两个 runtime 打开）
+  if (sessionPath) {
+    for (const d of dialogues.values()) {
+      if (d.sessionPath === sessionPath) {
+        currentDialogueId = d.id;
+        d.lastActive = Date.now();
+        sendResponse(requestId, "open_dialogue", true, {
+          dialogueId: d.id,
+          reused: true,
+          cwd: d.cwd,
+          overload: dialogues.size > 6,
+          state: snapshotState(d.runtime.session, d.cwd),
+        });
+        return d.id;
+      }
+    }
+  }
+
   let sessionManager;
-  if (mode === "recent") sessionManager = pi.SessionManager.continueRecent(cwd);
-  else if (mode === "memory") sessionManager = pi.SessionManager.inMemory(cwd);
-  else if (typeof mode === "string" && mode.startsWith("path:")) {
-    sessionManager = pi.SessionManager.open(mode.slice(5));
-  } else sessionManager = pi.SessionManager.create(cwd);
+  if (sessionPath) {
+    sessionManager = pi.SessionManager.open(sessionPath);
+  } else if (sessionMode === "recent") {
+    sessionManager = pi.SessionManager.continueRecent(targetCwd);
+  } else if (sessionMode === "memory") {
+    sessionManager = pi.SessionManager.inMemory(targetCwd);
+  } else {
+    sessionManager = pi.SessionManager.create(targetCwd);
+  }
 
   const { createAgentSessionRuntime, createAgentSessionFromServices, createAgentSessionServices } = pi;
-
   const createRuntime = async ({ cwd: rtCwd, sessionManager: rtSm, sessionStartEvent }) => {
     const services = await createAgentSessionServices({ cwd: rtCwd });
     return {
@@ -153,41 +202,185 @@ async function handleInit(payload, requestId) {
       diagnostics: services.diagnostics,
     };
   };
-
-  runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
-  session = runtime.session;
-  attachSessionWatcher(session);
+  const runtime = await createAgentSessionRuntime(createRuntime, {
+    cwd: targetCwd,
+    agentDir: targetAgentDir,
+    sessionManager,
+  });
+  const session = runtime.session;
+  // 恢复已存在会话时兜底：上次中断可能留下「最后一条是未完成 toolCall」
+  // （崩溃/强杀/heredoc 卡死现场）。模型看到历史里自己发了 toolCall 无结果，
+  // 会在下个 prompt 重发该调用 → 重新执行卡死命令 → prompt 永久挂起。
+  // 这里注入一条 toolResult 关闭它，让会话处于干净状态。
+  if (sessionPath || sessionMode === "recent") {
+    try {
+      closeUnfinishedToolCalls(session, sessionManager);
+    } catch (e) {
+      log("关闭未完成 toolCall 失败:", e?.message ?? e);
+    }
+  }
+  const id = newDialogueId();
+  const dialogue = {
+    id,
+    runtime,
+    cwd: targetCwd,
+    // 记录实际会话文件（new/recent/memory 打开时请求无 sessionPath，
+    // 但 runtime 落盘后 sessionFile 才有值；用真实文件才能命中复用检查）
+    sessionPath: sessionPath ?? session.sessionFile ?? null,
+    name: "",
+    status: "idle",
+    model: session.agent?.state?.model?.id ?? null,
+    provider: session.agent?.state?.model?.provider ?? null,
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    unsubscribe: null,
+  };
+  dialogue.unsubscribe = subscribeDialogue(session, id);
+  dialogues.set(id, dialogue);
+  currentDialogueId = id;
+  currentCwd = targetCwd;
   initialized = true;
-  currentCwd = cwd;
 
-  const state = snapshotState(session);
-  sendResponse(requestId, "init", true, {
-    cwd,
+  const state = snapshotState(session, targetCwd);
+  sendResponse(requestId, "open_dialogue", true, {
+    dialogueId: id,
+    reused: false,
+    cwd: targetCwd,
+    overload: dialogues.size > 6,
     sessionId: state.sessionId,
     sessionFile: state.sessionFile,
+    state,
     diagnostics: runtime.diagnostics ?? [],
   });
+  return id;
 }
 
-async function replaceSession(newSession) {
-  session = newSession;
-  attachSessionWatcher(session);
+/**
+ * 关闭会话末尾的未完成 toolCall（崩溃/中断遗留）：
+ * 向 sessionManager 追加 toolResult（写会话文件）+ 同步 agent 内存态。
+ * 返回关闭的 toolCall 数。仅处理「消息流末尾、无后续结果跟随」的调用。
+ */
+function closeUnfinishedToolCalls(session, sessionManager) {
+  const messages = session.agent?.state?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return 0;
+
+  // 从末尾回溯：先收集已见到的 toolResult id；遇到 assistant toolCall 且 id 未闭合 → 未完成
+  const resolved = new Set();
+  const pending = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role === "toolResult") {
+      resolved.add(m.toolCallId);
+      continue;
+    }
+    if (m?.role === "assistant" && Array.isArray(m.content)) {
+      const tcs = m.content.filter((c) => c?.type === "toolCall");
+      if (tcs.length) {
+        for (const tc of tcs) {
+          if (tc.id && !resolved.has(tc.id)) pending.push(tc);
+        }
+        // 已到「最近的未完成链」起点；更早的历史未闭合调用不会触发模型重试，无需处理
+        if (pending.length) break;
+      }
+      continue;
+    }
+    if (m?.role === "user") break;
+  }
+  if (pending.length === 0) return 0;
+
+  const now = Date.now();
+  for (const tc of pending) {
+    const result = {
+      role: "toolResult",
+      toolCallId: tc.id,
+      toolName: tc.name,
+      content: [
+        {
+          type: "text",
+          text: `[会话恢复] 工具调用 ${tc.name ?? ""} 因上次会话中断未完成，已自动中止（未执行）。如仍需该操作，请重新发起。`,
+        },
+      ],
+      isError: true,
+      timestamp: now,
+    };
+    try {
+      sessionManager.appendMessage(result); // 写会话文件（持久化）
+    } catch {
+      /* 文件层失败不阻断内存同步 */
+    }
+    // 同步 agent 内存态（appendMessage 只写文件，不更新 agent.state.messages）
+    session.agent.state.messages.push(result);
+  }
+  return pending.length;
 }
 
 async function handleCommand(cmd) {
   const { type, requestId } = cmd;
-  if (!initialized && type !== "init") {
+  if (!initialized && type !== "init" && type !== "open_dialogue" && type !== "list_dialogues" && type !== "get_core_version") {
     sendResponse(requestId, type, false, undefined, "尚未 init");
     return;
   }
+  // 解析命令作用域对话（默认当前激活对话）；会话类命令在统一作用域下执行
+  const scopeDlg = getDialogue(cmd.dialogueId);
+  const session = scopeDlg?.runtime.session ?? null;
+  const runtime = scopeDlg?.runtime ?? null;
+  const agent = session?.agent ?? null;
   try {
     switch (type) {
       case "init":
-        await handleInit(cmd, requestId);
+      case "open_dialogue":
+        await openDialogue(
+          { cwd: cmd.cwd, agentDir: cmd.agentDir, sessionPath: cmd.sessionPath, sessionMode: cmd.sessionMode },
+          requestId,
+        );
         break;
+
+      case "list_dialogues": {
+        const list = [...dialogues.values()].map((d) => ({
+          dialogueId: d.id,
+          cwd: d.cwd,
+          sessionPath: d.sessionPath,
+          name: d.name,
+          status: d.status,
+          model: d.model,
+          provider: d.provider,
+          lastActive: d.lastActive,
+          isCurrent: d.id === currentDialogueId,
+        }));
+        sendResponse(requestId, "list_dialogues", true, { dialogues: list, currentDialogueId });
+        break;
+      }
+
+      case "close_dialogue": {
+        const d = dialogues.get(cmd.dialogueId);
+        if (!d) {
+          sendResponse(requestId, "close_dialogue", false, undefined, "对话不存在");
+          break;
+        }
+        try {
+          d.unsubscribe?.();
+        } catch {
+          /* ignore */
+        }
+        try {
+          await d.runtime.dispose();
+        } catch {
+          /* ignore */
+        }
+        dialogues.delete(d.id);
+        if (currentDialogueId === d.id) currentDialogueId = null;
+        sendResponse(requestId, "close_dialogue", true, { dialogueId: d.id });
+        break;
+      }
 
       case "prompt":
         {
+          const dlg = getDialogue(cmd.dialogueId);
+          if (!dlg) {
+            sendResponse(requestId, "prompt", false, undefined, "对话不存在或未激活");
+            break;
+          }
+          const session = dlg.runtime.session;
           const raw = cmd.message ?? "";
           // !cmd / !!cmd：直执行 shell（不走 LLM）。!! = 输出不进上下文（对齐 TUI）
           const bashMatch = /^!{1,2}\s+/.exec(raw) || /^!{1,2}[^\s]/.exec(raw);
@@ -204,7 +397,7 @@ async function handleCommand(cmd) {
               id: `bash-${Date.now()}`,
               name: "bash",
               status: "running",
-            });
+            }, dlg.id);
             await session.executeBash(command, (chunk) => {
               forwardEvent({
                 type: "tool_execution_update",
@@ -212,7 +405,7 @@ async function handleCommand(cmd) {
                 name: "bash",
                 status: "running",
                 chunk,
-              });
+              }, dlg.id);
             }, {
               excludeFromContext: isExcluded,
             });
@@ -222,14 +415,16 @@ async function handleCommand(cmd) {
               name: "bash",
               status: "done",
               isError: false,
-            });
+            }, dlg.id);
             sendResponse(requestId, "prompt", true, { bash: true, command, excludeFromContext: isExcluded });
             break;
           }
+          dlg.status = "flowing";
           await session.prompt(raw, {
             streamingBehavior: cmd.streamingBehavior ?? "steer",
             images: cmd.images,
           });
+          dlg.status = "idle";
           sendResponse(requestId, "prompt", true);
         }
         break;
@@ -249,9 +444,15 @@ async function handleCommand(cmd) {
         sendResponse(requestId, "abort", true);
         break;
 
-      case "get_state":
-        sendResponse(requestId, "get_state", true, snapshotState(session));
+      case "get_state": {
+        // AgentState 无 cwd 字段（PI SDK 设计），用对话自己的 cwd 补上，
+        // 前端 loadAll 依赖它恢复当前项目高亮；dialogueId 供前端按对话过滤事件。
+        sendResponse(requestId, "get_state", true, {
+          dialogueId: scopeDlg?.id ?? currentDialogueId ?? null,
+          ...snapshotState(session, scopeDlg?.cwd ?? null),
+        });
         break;
+      }
 
       case "get_messages":
         sendResponse(requestId, "get_messages", true, { messages: session.messages ?? [] });
@@ -551,9 +752,11 @@ async function handleCommand(cmd) {
           const tmp = authPath + ".tmp";
           await fs.writeFile(tmp, JSON.stringify(auth, null, 2), "utf8");
           await fs.rename(tmp, authPath);
-          // 当前 runtime 立即生效
-          const mr = runtime?.services?.modelRuntime;
-          if (mr && key) await mr.setRuntimeApiKey(pid, key);
+          // 所有对话的 runtime 立即生效（并行对话时每个 runtime 各有一份 modelRuntime）
+          for (const d of dialogues.values()) {
+            const mr = d.runtime?.services?.modelRuntime;
+            if (mr && key) await mr.setRuntimeApiKey(pid, key).catch(() => {});
+          }
           sendResponse(requestId, "set_api_key", true, { providerId: pid, set: !!key });
         } catch (e) {
           sendResponse(requestId, "set_api_key", false, undefined,
@@ -716,13 +919,13 @@ async function handleCommand(cmd) {
       }
 
       case "switch_project": {
-        // 切换项目 = 用新 cwd 重新 init（替换整个 runtime）
+        // 切项目 = 打开/激活该项目最近会话的对话（旧对话保留后台继续，不销毁）
         const cwd = cmd.cwd;
         if (!cwd) {
           sendResponse(requestId, "switch_project", false, undefined, "缺少 cwd");
           break;
         }
-        await handleInit({ ...cmd, cwd, sessionMode: cmd.sessionMode ?? "recent" }, requestId);
+        await openDialogue({ cwd, sessionMode: cmd.sessionMode ?? "recent" }, requestId);
         break;
       }
 
@@ -737,9 +940,11 @@ async function handleCommand(cmd) {
         break;
 
       case "new_session":
-        await runtime.newSession();
-        await replaceSession(runtime.session);
-        sendResponse(requestId, "new_session", true, snapshotState(session));
+        // 新建会话 = 在当前项目下新建一个对话（旧对话保留后台继续）
+        await openDialogue(
+          { cwd: cmd.cwd ?? currentCwd ?? process.cwd(), sessionMode: "new" },
+          requestId,
+        );
         break;
 
       case "list_sessions":
@@ -756,28 +961,44 @@ async function handleCommand(cmd) {
         break;
 
       case "switch_session":
-        await runtime.switchSession(cmd.sessionPath);
-        await replaceSession(runtime.session);
-        sendResponse(requestId, "switch_session", true, snapshotState(session));
+        // 切会话 = 打开/激活该会话路径的对话（原对话保留后台继续，不再被 teardown）
+        if (!cmd.sessionPath) {
+          sendResponse(requestId, "switch_session", false, undefined, "缺少 sessionPath");
+          break;
+        }
+        await openDialogue({ sessionPath: cmd.sessionPath }, requestId);
         break;
 
-      case "fork":
+      case "fork": {
         // clone = fork 当前 leaf 且 position=at（立即原地分支，不进入树选择）
+        const dlg = getDialogue(cmd.dialogueId);
+        if (!dlg) {
+          sendResponse(requestId, "fork", false, undefined, "对话不存在或未激活");
+          break;
+        }
         if (cmd.position === "at") {
-          const leafId = session?.sessionManager?.getLeafId?.();
+          const leafId = dlg.runtime.session?.sessionManager?.getLeafId?.();
           if (!leafId) {
             sendResponse(requestId, "fork", false, undefined, "当前会话无 leaf，无法克隆");
             break;
           }
-          await runtime.fork(leafId, { position: "at" });
-          await replaceSession(runtime.session);
-          sendResponse(requestId, "fork", true, null);
-          break;
+          await dlg.runtime.fork(leafId, { position: "at" });
+        } else {
+          await dlg.runtime.fork(cmd.entryId);
         }
-        await runtime.fork(cmd.entryId);
-        await replaceSession(runtime.session);
+        // fork 后 runtime 的当前 session 被替换，重新订阅事件
+        try {
+          dlg.unsubscribe?.();
+        } catch {
+          /* ignore */
+        }
+        dlg.unsubscribe = subscribeDialogue(dlg.runtime.session, dlg.id);
+        dlg.sessionPath = dlg.runtime.session?.sessionFile ?? null;
+        dlg.model = dlg.runtime.session?.agent?.state?.model?.id ?? null;
+        dlg.provider = dlg.runtime.session?.agent?.state?.model?.provider ?? null;
         sendResponse(requestId, "fork", true, null);
         break;
+      }
 
       case "compact":
         sendResponse(requestId, "compact", true, await session.compact(cmd.customInstructions));
@@ -846,6 +1067,23 @@ async function handleCommand(cmd) {
           for (const t of targets) {
             await fs.rm(t, { recursive: true, force: true });
           }
+          // 关闭池中属于该项目的对话（runtime 持有被删的会话文件会出问题）
+          for (const [id, d] of [...dialogues]) {
+            if (d.cwd === cwd) {
+              try {
+                d.unsubscribe?.();
+              } catch {
+                /* ignore */
+              }
+              try {
+                await d.runtime.dispose();
+              } catch {
+                /* ignore */
+              }
+              dialogues.delete(id);
+              if (currentDialogueId === id) currentDialogueId = null;
+            }
+          }
           sendResponse(requestId, "delete_project", true, { cwd, deleted: targets, deletedCount });
         } catch (e) {
           sendResponse(requestId, "delete_project", false, undefined,
@@ -881,10 +1119,17 @@ async function handleCommand(cmd) {
         break;
 
       case "exit":
-        try {
-          session?.dispose?.();
-        } catch {
-          /* ignore */
+        for (const d of dialogues.values()) {
+          try {
+            d.unsubscribe?.();
+          } catch {
+            /* ignore */
+          }
+          try {
+            await d.runtime.dispose();
+          } catch {
+            /* ignore */
+          }
         }
         sendResponse(requestId, "exit", true);
         process.exit(0);
@@ -920,6 +1165,42 @@ try {
 
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
+// 会话状态变更类命令的串行队列：保证 switch_project / switch_session 等切换完成后，
+// 后续 prompt 才执行，避免把指令错发到上一个项目/会话（跨项目错发）。
+// 查询类命令（get_state / get_messages 等）不排队，直接执行以保持 UI 流畅。
+const STATEFUL_COMMANDS = new Set([
+  "init",
+  "open_dialogue",
+  "close_dialogue",
+  "prompt",
+  "steer",
+  "follow_up",
+  "switch_project",
+  "set_thinking_level",
+  "cycle_model",
+  "new_session",
+  "switch_session",
+  "fork",
+  "compact",
+  "set_session_name",
+  "set_model",
+  "delete_session",
+  "delete_project",
+  "set_api_key",
+  "set_setting",
+  "reload_resources",
+]);
+let commandChain = Promise.resolve();
+function enqueueStateful(task) {
+  const next = commandChain.then(task);
+  // 无论成功失败都不让队列断链
+  commandChain = next.then(
+    () => {},
+    () => {},
+  );
+  return next;
+}
+
 rl.on("line", (line) => {
   if (!line.trim()) return;
   let cmd;
@@ -929,14 +1210,30 @@ rl.on("line", (line) => {
     sendResponse(undefined, "parse", false, undefined, "无法解析 JSON 指令");
     return;
   }
-  void handleCommand(cmd);
+  if (cmd.type === "abort" || cmd.type === "exit") {
+    // abort 立即执行以打断当前流式输出；exit 直接退出进程
+    void handleCommand(cmd);
+    return;
+  }
+  if (STATEFUL_COMMANDS.has(cmd.type)) {
+    enqueueStateful(() => handleCommand(cmd));
+  } else {
+    void handleCommand(cmd);
+  }
 });
 
 rl.on("close", () => {
-  try {
-    session?.dispose?.();
-  } catch {
-    /* ignore */
+  for (const d of dialogues.values()) {
+    try {
+      d.unsubscribe?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      d.runtime?.dispose?.();
+    } catch {
+      /* ignore */
+    }
   }
   process.exit(0);
 });

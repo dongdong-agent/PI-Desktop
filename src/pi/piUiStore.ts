@@ -29,6 +29,8 @@ export interface SessionStats {
 interface PiUiState {
   projects: ProjectItem[];
   currentCwd: string | null;
+  /** 当前激活对话 id（后端对话池）；事件按它过滤，指令带它路由 */
+  currentDialogueId: string | null;
   models: ModelItem[];
   currentModelRef: string | null; // "provider/id" 组合（同 id 不同 provider 可区分）
   stats: SessionStats | null;
@@ -48,6 +50,7 @@ interface PiUiState {
 export const usePiUiStore = create<PiUiState>()((set, get) => ({
   projects: [],
   currentCwd: null,
+  currentDialogueId: null,
   models: [],
   currentModelRef: null,
   stats: null,
@@ -65,6 +68,7 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
       ]);
       const projects = projRes?.success ? (projRes.data?.projects ?? []) : [];
       const cwd = stateRes?.success ? (stateRes.data?.cwd ?? null) : null;
+      const dialogueId = stateRes?.success ? (stateRes.data?.dialogueId ?? null) : null;
       const models = modelRes?.success ? (modelRes.data?.models ?? []) : [];
       // 去重键 = provider:id（同 id 不同 provider 的模型都保留，标注提供商）
       const seen = new Set<string>();
@@ -79,6 +83,7 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
       set({
         projects,
         currentCwd: cwd,
+        currentDialogueId: dialogueId,
         models: uniqueModels,
         currentModelRef: modelId && provider ? `${provider}/${modelId}` : null,
         thinkingLevel: stateRes?.success ? (stateRes.data?.thinkingLevel ?? null) : null,
@@ -147,9 +152,11 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
     set({ loading: true, error: null });
     (window as unknown as { __loadAllRetries?: number }).__loadAllRetries = 0;
     try {
+      // 切换前中止当前流式输出，避免旧项目输出与新项目切换竞态（后端串行队列兜底顺序）
+      await piSend({ type: "abort" }).catch(() => {});
       const res = await piSend({ type: "switch_project", cwd, sessionMode: "recent" });
       if (res?.success) {
-        set({ currentCwd: cwd });
+        set({ currentCwd: cwd, currentDialogueId: res.data?.dialogueId ?? null });
         // 通知主视图与侧栏刷新会话/消息
         window.dispatchEvent(new CustomEvent("pi:session-changed"));
         window.dispatchEvent(new CustomEvent("pi:project-changed"));

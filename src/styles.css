@@ -1463,62 +1463,16 @@ body {
 
 /* 项目列表 */
 
-.workspace-list {
+
+/* 项目归属工作区：整体缩进一级 + 左侧参考线（树形层级） */
+.sidebar__sub {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 2px 0;
-}
-
-.workspace-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  box-sizing: border-box;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  border: 1px solid var(--border);
-  transition: all 0.12s ease;
-}
-
-.workspace-item:hover {
-  background: var(--bg-hover);
-  border-color: var(--text-dim);
-}
-
-.workspace-item__name {
-  min-width: 0;
   flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 0.8571rem;
-  font-weight: 500;
-}
-
-.workspace-item__count {
-  flex-shrink: 0;
-  font-size: 0.6429rem;
-  color: var(--text-dim);
-  opacity: 0.65;
-}
-
-.workspace-item__del {
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 0.8571rem;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-
-.workspace-item__del:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
+  min-height: 0;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
 }
 
 .project-tree {

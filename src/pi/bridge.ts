@@ -27,9 +27,12 @@ function dispatch(parsed: any) {
       return; // 响应不回发给视图
     }
   }
-  // 2) 解包 sidecar 事件层 {type:"event", event:{...}} → 真实事件
+  // 2) 解包 sidecar 事件层 {type:"event", dialogueId?, event:{...}} → 真实事件
+  //    对话池：dialogueId 附加到事件上（_dialogueId），供视图按当前对话过滤后台流式事件
   if (parsed && parsed.type === "event" && parsed.event && typeof parsed.event === "object") {
+    const dlgId = parsed.dialogueId ?? null;
     parsed = parsed.event;
+    if (dlgId) parsed._dialogueId = dlgId;
   }
   // 3) 视图监听器
   for (const cb of [...eventListeners]) {

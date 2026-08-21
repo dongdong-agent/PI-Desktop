@@ -4,6 +4,7 @@
  */
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
+import { loadZoom } from "../app/zoom";
 import { piSend } from "../pi/bridge";
 import { projectShortName, usePiUiStore } from "../pi/piUiStore";
 import { SettingsPanel } from "./SettingsPanel";
@@ -32,12 +33,7 @@ interface ProjectNode {
   sessions: PiSessionItem[];
 }
 
-interface Workspace {
-  id: string;
-  name: string;
-  projects: string[]; // 项目 cwd 列表
-  at: number;
-}
+
 
 /** 通知主视图刷新（切换会话/项目后） */
 export function notifySessionChanged(): void {
@@ -57,50 +53,7 @@ export function Sidebar() {
   const [projectsOpen, setProjectsOpen] = useState(true); // 项目区默认展开，可点标题折叠
   const [allSessionsOpen, setAllSessionsOpen] = useState(true); // 未分类对话区默认展开
 
-  // 工作区（一组项目，本地持久化，可保存/载入/删除）
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("aiwb:workspaces") ?? "[]") as Workspace[];
-    } catch {
-      return [];
-    }
-  });
-  const saveWorkspaces = useCallback((next: Workspace[]) => {
-    setWorkspaces(next);
-    try {
-      localStorage.setItem("aiwb:workspaces", JSON.stringify(next));
-    } catch {
-      /* ignore */
-    }
-  }, []);
-  const [workspaceOpen, setWorkspaceOpen] = useState(true);
-  const saveCurrentWorkspace = useCallback(() => {
-    const cwds = usePiUiStore.getState().projects.map((p) => p.cwd);
-    if (cwds.length === 0) return;
-    const name = window.prompt("命名工作区", `工作区-${new Date().toLocaleDateString()}`);
-    if (name === null) return;
-    saveWorkspaces([
-      { id: `ws-${Date.now()}`, name: name.trim() || "未命名", projects: cwds, at: Date.now() },
-      ...workspaces,
-    ]);
-  }, [workspaces, saveWorkspaces]);
-  const loadWorkspace = useCallback(async (ws: Workspace) => {
-    const list = ws.projects;
-    if (list.length === 0) return;
-    for (const cwd of list) {
-      await piSend({ type: "switch_project", cwd, sessionMode: "recent" }).catch(() => {});
-    }
-    const first = list[0];
-    if (first) {
-      await usePiUiStore.getState().switchProject(first);
-      void usePiUiStore.getState().loadAll();
-      notifySessionChanged();
-    }
-  }, []);
-  const removeWorkspace = useCallback(
-    (id: string) => saveWorkspaces(workspaces.filter((w) => w.id !== id)),
-    [workspaces, saveWorkspaces],
-  );
+  // 工作区 = 当前项目集（自动保存为 aiwb:workspace 文档；显示即已保存，无需手动列表）
 
   // 树状会话数据
   const [projects, setProjects] = useState<ProjectNode[]>([]);
@@ -254,6 +207,24 @@ export function Sidebar() {
   };
 
   const currentCwd = usePiUiStore((s) => s.currentCwd);
+
+  // 工作区自动保存：项目集 + 当前项目 + 主题/缩放 快照（显示即已保存）
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "aiwb:workspace",
+        JSON.stringify({
+          projects: projects.map((p) => p.cwd),
+          lastCwd: currentCwd ?? null,
+          theme: loadTheme(),
+          zoom: loadZoom(),
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [projects, currentCwd]);
   const switchProject = usePiUiStore((s) => s.switchProject);
   // 切项目时持久化，供重启恢复
   useEffect(() => {
@@ -324,6 +295,7 @@ export function Sidebar() {
             if (ok && lastSession) {
               void piSend({ type: "switch_session", sessionPath: lastSession }).then((r) => {
                 if (r?.success) {
+                  usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null });
                   void refresh();
                   notifySessionChanged();
                 }
@@ -333,6 +305,7 @@ export function Sidebar() {
         } else if (lastSession) {
           void piSend({ type: "switch_session", sessionPath: lastSession }).then((r) => {
             if (r?.success) {
+              usePiUiStore.setState({ currentDialogueId: r.data?.dialogueId ?? null });
               void refresh();
               notifySessionChanged();
             }
@@ -420,12 +393,18 @@ export function Sidebar() {
       } catch {
         /* ignore */
       }
-      void piSend({ type: "switch_session", sessionPath: path }).then((res) => {
-        if (res?.success) {
-          void refresh();
-          notifySessionChanged();
-        }
-      });
+      // 切换前中止当前流式，避免错发到旧会话（后端串行队列兜底顺序）
+      void piSend({ type: "abort" })
+        .catch(() => {})
+        .then(() => piSend({ type: "switch_session", sessionPath: path }))
+        .then((res) => {
+          if (res?.success) {
+            // 对话池：记录新激活的对话 id（事件过滤/指令路由用）
+            usePiUiStore.setState({ currentDialogueId: res.data?.dialogueId ?? null });
+            void refresh();
+            notifySessionChanged();
+          }
+        });
     },
     [refresh],
   );
@@ -591,61 +570,7 @@ export function Sidebar() {
         <div className="sidebar__drop-hint">松开鼠标，将此文件夹添加为项目</div>
       )}
 
-      {/* 工作区：点击标题折叠/展开；＋ 保存当前项目集为新工作区 */}
-      <div
-        className="sidebar__toggle sidebar__toggle--row"
-        role="button"
-        title={workspaceOpen ? "折叠工作区列表" : "展开工作区列表"}
-        onClick={() => setWorkspaceOpen((v) => !v)}
-      >
-        <span className="sidebar__toggle-arrow">{workspaceOpen ? "▾" : "▸"}</span>
-        <span className="sidebar__toggle-label">
-          工作区{workspaces.length > 0 ? `（${workspaces.length}）` : ""}
-        </span>
-        <button
-          className="sidebar__add"
-          title="将当前项目保存为新工作区"
-          onClick={(e) => {
-            e.stopPropagation();
-            saveCurrentWorkspace();
-          }}
-        >
-          ＋
-        </button>
-      </div>
-      {workspaceOpen && (
-        <div className="workspace-list">
-          {workspaces.length === 0 ? (
-            <div className="sidebar__placeholder">
-              <p>暂无工作区，点「＋」将当前项目集保存为一个工作区</p>
-            </div>
-          ) : (
-            workspaces.map((ws) => (
-              <div
-                key={ws.id}
-                className="workspace-item"
-                onClick={() => void loadWorkspace(ws)}
-                title={`载入：\n${ws.projects.join("\n")}`}
-              >
-                <span className="workspace-item__name">{ws.name}</span>
-                <span className="workspace-item__count">（{ws.projects.length}）</span>
-                <button
-                  className="workspace-item__del"
-                  title="删除工作区"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeWorkspace(ws.id);
-                  }}
-                >
-                  ✕
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* 项目：点击标题折叠/展开整个项目区 */}
+      {/* 工作区：当前项目集（自动保存，显示即已保存）；＋ 添加项目目录 */}
       <div
         className="sidebar__toggle sidebar__toggle--row"
         role="button"
@@ -653,7 +578,7 @@ export function Sidebar() {
         onClick={() => setProjectsOpen((v) => !v)}
       >
         <span className="sidebar__toggle-arrow">{projectsOpen ? "▾" : "▸"}</span>
-        <span className="sidebar__toggle-label">项目</span>
+        <span className="sidebar__toggle-label">工作区</span>
         <button
           className="sidebar__add"
           title="添加项目目录"
@@ -666,6 +591,7 @@ export function Sidebar() {
         </button>
       </div>
       {projectsOpen && (
+      <div className="sidebar__sub">
       <nav className="project-tree">
         {projects.length === 0 ? (
           <div className="sidebar__placeholder">
@@ -692,6 +618,7 @@ export function Sidebar() {
           ))
         )}
       </nav>
+      </div>
       )}
 
       {/* 对话（不属于任何项目的会话）：点击标题折叠/展开 */}

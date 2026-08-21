@@ -66,6 +66,8 @@ const MAX_IMAGES = 4;
 
 export function PiChatView() {
   const [treeOpen, setTreeOpen] = useState(false);
+  // 切换项目/会话中（loading）时禁用发送，避免指令错发到上一个项目
+  const loading = usePiUiStore((s) => s.loading);
   // 主区应用右键菜单（空白/消息区右键）
   const [appMenu, setAppMenu] = useState<{ x: number; y: number } | null>(null);
   const openAppMenu = (e: React.MouseEvent) => {
@@ -127,6 +129,9 @@ export function PiChatView() {
   // 事件 → 状态（保持最新引用，防闭包过期；合并后一次渲染）
   const handleEvent = useCallback(
     (ev: any) => {
+      // 多对话：后台对话（非当前激活）的流式事件不污染当前视图
+      const activeDlg = usePiUiStore.getState().currentDialogueId;
+      if (ev?._dialogueId && activeDlg && ev._dialogueId !== activeDlg) return;
       lastEventRef.current = Date.now();
       // 诊断：记录发送后的事件类型
       if (window.__piDiagEvents && ev?.type) {
@@ -296,6 +301,7 @@ export function PiChatView() {
           type: "prompt",
           message: payload,
           streamingBehavior: "steer",
+          dialogueId: usePiUiStore.getState().currentDialogueId ?? undefined,
           images: imgs.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
         })
           .then((res) => {
@@ -504,6 +510,7 @@ export function PiChatView() {
                 className="chat__textarea"
                 onPaste={handlePaste}
                 value={input}
+                disabled={loading}
                 placeholder="发送给 PI…（/ 命令补全，Enter 发送，Shift+Enter 换行）"
                 rows={1}
                 onChange={(e) => handleInputChange(e.target.value)}
@@ -542,7 +549,7 @@ export function PiChatView() {
                 ■ 停止
               </button>
             ) : (
-              <button className="btn btn--primary" onClick={() => send()} disabled={!input.trim() && pendingImages.length === 0}>
+              <button className="btn btn--primary" onClick={() => send()} disabled={loading || (!input.trim() && pendingImages.length === 0)}>
                 发送
               </button>
             )}

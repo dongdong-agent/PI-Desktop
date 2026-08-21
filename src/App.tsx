@@ -10,24 +10,31 @@ import { PiChatView } from "./ui/PiChatView";
 import { TitleBar } from "./ui/TitleBar";
 import "./styles.css";
 
-/** 缩放快捷键：Ctrl/Cmd + - / + / 0（上下限与步进在 zoom.ts 定义） */
+/** 缩放快捷键：Ctrl/Cmd + - / + / 0（上下限与步进在 zoom.ts 定义）。
+ * WebView2 会把 Ctrl+±/0 当浏览器加速键吃掉，网页收不到 keydown；
+ * 故由 Rust 侧（global-shortcut 插件，窗口聚焦时注册）发 pi:zoom-shortcut 事件驱动。 */
 function useZoomShortcut(): void {
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      if (e.key === "+" || e.key === "=" || e.key === "Add") {
-        e.preventDefault();
-        zoomIn();
-      } else if (e.key === "-" || e.key === "Subtract") {
-        e.preventDefault();
-        zoomOut();
-      } else if (e.key === "0") {
-        e.preventDefault();
-        zoomReset();
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<string>("pi:zoom-shortcut", (e) => {
+          const a = e.payload;
+          if (a === "zoom-in") zoomIn();
+          else if (a === "zoom-out") zoomOut();
+          else if (a === "zoom-reset") zoomReset();
+        });
+        if (disposed) unlisten();
+      } catch {
+        /* 非 Tauri 环境忽略 */
       }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 }
 
