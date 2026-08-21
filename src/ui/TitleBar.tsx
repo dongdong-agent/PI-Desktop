@@ -4,9 +4,11 @@
  */
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useZoomLevel, zoomIn, zoomOut, zoomReset } from "../app/zoom";
 
 export function TitleBar() {
   const [max, setMax] = useState(false);
+  const level = useZoomLevel();
 
   useEffect(() => {
     void invoke("win_is_maximized")
@@ -20,6 +22,21 @@ export function TitleBar() {
         <span className="titlebar__logo">π</span>
       </div>
       <div className="titlebar__spacer" data-tauri-drag-region />
+      <div className="titlebar__zoom" onClick={(e) => e.stopPropagation()}>
+        <button className="titlebar__btn" title="缩小界面（Ctrl + -）" onClick={() => zoomOut()}>
+          －
+        </button>
+        <button
+          className="titlebar__btn titlebar__zoom-val"
+          title="重置为 100%（Ctrl + 0；点击重置）"
+          onClick={() => zoomReset()}
+        >
+          {Math.round(level * 100)}%
+        </button>
+        <button className="titlebar__btn" title="放大界面（Ctrl + +）" onClick={() => zoomIn()}>
+          ＋
+        </button>
+      </div>
       <div className="titlebar__controls">
         <button
           className="titlebar__btn"

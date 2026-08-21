@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { piSend } from "../pi/bridge";
 import { usePiUiStore } from "../pi/piUiStore";
+import { useZoomLevel, zoomIn, zoomOut, zoomReset } from "../app/zoom";
 
 /** 候选 API Key 列表（本地存储，不入 auth.json；切换时写入 auth.json 与终端共享） */
 const CANDIDATES_KEY = "aiwb:key-candidates";
@@ -83,6 +84,7 @@ interface ExtensionItem {
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>("providers");
+  const zoomLevel = useZoomLevel();
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<ProviderItem | null>(null);
@@ -441,6 +443,22 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   onChange={(e) => void changeSetting("autoCompaction", e.target.checked)}
                 />
               </label>
+
+              <div className="settings__group-label">界面</div>
+              <div className="settings__row">
+                <span>界面缩放</span>
+                <div className="settings__zoomctl">
+                  <button className="zoomctl__btn" onClick={() => zoomOut()} title="缩小（Ctrl + -）">－</button>
+                  <button
+                    className="zoomctl__val"
+                    onClick={() => zoomReset()}
+                    title="重置为 100%（Ctrl + 0；点击重置）"
+                  >
+                    {Math.round(zoomLevel * 100)}%
+                  </button>
+                  <button className="zoomctl__btn" onClick={() => zoomIn()} title="放大（Ctrl + +）">＋</button>
+                </div>
+              </div>
             </div>
           )}
 

@@ -4,57 +4,26 @@
  */
 import { Component, useEffect, type ReactNode } from "react";
 import { applyTheme, loadTheme } from "./app/theme";
+import { applyZoom, loadZoom, zoomIn, zoomOut, zoomReset } from "./app/zoom";
 import { Sidebar } from "./ui/Sidebar";
 import { PiChatView } from "./ui/PiChatView";
 import { TitleBar } from "./ui/TitleBar";
 import "./styles.css";
 
-const ZOOM_KEY = "aiwb:zoom";
-const ZOOM_MIN = 0.7;
-const ZOOM_MAX = 1.6;
-const ZOOM_STEP = 0.1;
-const BASE_FONT = 14; // px，与 styles.css 的 rem 基准一致
-
-function loadZoom(): number {
-  try {
-    const v = parseFloat(localStorage.getItem(ZOOM_KEY) ?? "");
-    if (Number.isFinite(v) && v >= ZOOM_MIN && v <= ZOOM_MAX) return v;
-  } catch {
-    /* ignore */
-  }
-  return 1;
-}
-
-/**
- * 缩放 = 调整 html 基准字号（只影响 rem 文本，布局 px 不变 → 自适应换行/撑开）
- */
-function applyZoom(level: number, persist = true): void {
-  document.documentElement.style.fontSize = `${BASE_FONT * level}px`;
-  if (persist) {
-    try {
-      localStorage.setItem(ZOOM_KEY, String(level));
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
+/** 缩放快捷键：Ctrl/Cmd + - / + / 0（上下限与步进在 zoom.ts 定义） */
 function useZoomShortcut(): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
-      const cur = loadZoom();
-      let next: number | null = null;
       if (e.key === "+" || e.key === "=" || e.key === "Add") {
-        next = Math.min(cur + ZOOM_STEP, ZOOM_MAX);
-      } else if (e.key === "-" || e.key === "Subtract") {
-        next = Math.max(cur - ZOOM_STEP, ZOOM_MIN);
-      } else if (e.key === "0") {
-        next = 1;
-      }
-      if (next !== null) {
         e.preventDefault();
-        applyZoom(next);
+        zoomIn();
+      } else if (e.key === "-" || e.key === "Subtract") {
+        e.preventDefault();
+        zoomOut();
+      } else if (e.key === "0") {
+        e.preventDefault();
+        zoomReset();
       }
     };
     window.addEventListener("keydown", onKeyDown);

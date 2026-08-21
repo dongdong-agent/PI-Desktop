@@ -805,6 +805,55 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "delete_project": {
+        // 破坏性操作：删除指定 cwd 对应的整个 session 目录（该项目全部会话）。
+        // 需前端确认后调用。同一 cwd 若分散在多个子目录，全部一并删除。
+        const cwd = cmd.cwd;
+        if (!cwd) {
+          sendResponse(requestId, "delete_project", false, undefined, "缺少 cwd");
+          break;
+        }
+        try {
+          const agentDir = pi.getAgentDir();
+          const sessionsDir = path.join(agentDir, "sessions");
+          const targets = [];
+          let deletedCount = 0;
+          const entries = await fs.readdir(sessionsDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const sub = path.join(sessionsDir, entry.name);
+            let headerCwd = null;
+            let files = [];
+            try {
+              files = (await fs.readdir(sub)).filter((f) => f.endsWith(".jsonl"));
+              if (files.length === 0) continue;
+              files.sort();
+              headerCwd = JSON.parse(
+                (await fs.readFile(path.join(sub, files[files.length - 1]), "utf8")).split("\n")[0],
+              )?.cwd ?? null;
+            } catch {
+              continue;
+            }
+            if (headerCwd === cwd) {
+              targets.push(sub);
+              deletedCount += files.length;
+            }
+          }
+          if (targets.length === 0) {
+            sendResponse(requestId, "delete_project", false, undefined, "未找到该项目，可能已删除");
+            break;
+          }
+          for (const t of targets) {
+            await fs.rm(t, { recursive: true, force: true });
+          }
+          sendResponse(requestId, "delete_project", true, { cwd, deleted: targets, deletedCount });
+        } catch (e) {
+          sendResponse(requestId, "delete_project", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "get_session_stats":
         try {
           const stats = typeof session.getSessionStats === "function"

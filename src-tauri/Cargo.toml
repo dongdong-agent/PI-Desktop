@@ -1,6 +1,6 @@
 [package]
 name = "agent-workbench"
-version = "0.3.7"
+version = "0.3.8"
 description = "AI 工作台 - 个人 AI Agent 桌面工作台"
 authors = ["vista"]
 edition = "2021"

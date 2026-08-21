@@ -495,6 +495,52 @@ export function Sidebar() {
     [refresh],
   );
 
+  // 删除项目（删该项目全部会话 + 清理本地别名/置顶残留）
+  const deleteProject = useCallback(
+    (cwd: string) => {
+      const name = projName(cwd);
+      const ok = window.confirm(
+        `确定删除项目「${name}」？\n\n路径：${cwd}\n\n将删除该项目下的全部会话，此操作不可恢复。`,
+      );
+      if (!ok) return;
+      void piSend({ type: "delete_project", cwd }).then(async (res) => {
+        if (!res?.success) {
+          console.error("[project] 删除失败:", res?.error);
+          return;
+        }
+        // 若删除的是当前项目，切到列表剩余第一个；无剩余则清空
+        if (currentCwd === cwd) {
+          const others = projects.filter((p) => p.cwd !== cwd);
+          if (others.length > 0) {
+            await usePiUiStore.getState().switchProject(others[0].cwd);
+          } else {
+            try {
+              localStorage.removeItem("aiwb:last-cwd");
+            } catch {
+              /* ignore */
+            }
+            usePiUiStore.setState({ currentCwd: null });
+          }
+        }
+        // 清理本地存储里指向该项目的残留
+        if (projAliases[cwd]) {
+          const next = { ...projAliases };
+          delete next[cwd];
+          saveProjAliases(next);
+        }
+        if (projPinned.has(cwd)) {
+          const next = new Set(projPinned);
+          next.delete(cwd);
+          saveProjPinned(next);
+        }
+        await refresh();
+        void loadAll();
+        notifySessionChanged();
+      });
+    },
+    [projName, currentCwd, projects, projAliases, projPinned, saveProjAliases, saveProjPinned, refresh, loadAll],
+  );
+
   const invokeSkill = useCallback((name: string, desc?: string) => {
     // 打开 UI 对话框（替代系统 window.prompt），用户填指令后确认执行
     setSkillDialog({ name, description: desc ?? "" });
@@ -906,6 +952,11 @@ export function Sidebar() {
             void navigator.clipboard.writeText(projCtx.cwd).catch(() => {});
             setProjCtx(null);
           }}
+          onDelete={() => {
+            const cwd = projCtx.cwd;
+            setProjCtx(null);
+            deleteProject(cwd);
+          }}
         />
       )}
     </aside>
@@ -1063,11 +1114,12 @@ function ProjectContextMenu(props: {
   onNewSession: () => void;
   onRename: () => void;
   onCopyPath: () => void;
+  onDelete: () => void;
 }) {
   const style: React.CSSProperties = {
     position: "fixed",
     left: Math.min(props.x, window.innerWidth - 180),
-    top: Math.min(props.y, window.innerHeight - 240),
+    top: Math.min(props.y, window.innerHeight - 280),
   };
   return (
     <>
@@ -1080,6 +1132,7 @@ function ProjectContextMenu(props: {
         <button className="ctxmenu__item" onClick={props.onNewSession}><PlusIcon /> 在此新建会话</button>
         <button className="ctxmenu__item" onClick={props.onRename}><PencilIcon /> 重命名</button>
         <button className="ctxmenu__item" onClick={props.onCopyPath}><LinkIcon /> 复制路径</button>
+        <button className="ctxmenu__item ctxmenu__item--danger" onClick={props.onDelete}>✕ 删除项目</button>
       </div>
     </>
   );

@@ -6,6 +6,7 @@ import { friendlyError } from "./errorFriendly";
 
 export type PiBlock =
   | { kind: "text"; text: string }
+  | { kind: "image"; data: string; mimeType: string }
   | { kind: "thinking"; text: string; error?: string }
   | {
       kind: "toolCall";
@@ -331,12 +332,20 @@ export function applyEvent(state: PiChatUiState, ev: any): PiChatUiState {
   }
 }
 
-/** 追加一条本地用户消息（发送 prompt 前调用） */
-export function addUserMessage(state: PiChatUiState, text: string): PiChatUiState {
+/** 追加一条本地用户消息（发送 prompt 前调用）。可选附带图片块（粘贴的截图等）。 */
+export function addUserMessage(
+  state: PiChatUiState,
+  text: string,
+  images: { data: string; mimeType: string }[] = [],
+): PiChatUiState {
+  const blocks: PiBlock[] = [
+    ...images.map((img) => ({ kind: "image" as const, data: img.data, mimeType: img.mimeType })),
+    { kind: "text", text },
+  ];
   const msg: PiViewMessage = {
     id: vid(),
     role: "user",
-    blocks: [{ kind: "text", text }],
+    blocks,
     status: "done",
     ts: Date.now(),
   };

@@ -20,6 +20,50 @@ import {
   type PiChatUiState,
 } from "../pi/eventModel";
 
+/** 把剪贴板图片读取为 base64 dataURL；过大时 canvas 降采样到 ≤1280 控体积（防上游 413）。 */
+function imageFileToDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const MAX = 1280;
+        let w = img.naturalWidth || 0;
+        let h = img.naturalHeight || 0;
+        const scale = Math.min(1, MAX / Math.max(w || 1, h || 1));
+        if (scale < 1 && w && h) {
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("canvas context 不可用");
+          ctx.drawImage(img, 0, 0, w, h);
+          const ext = file.type === "image/png" ? "image/png" : "image/jpeg";
+          resolve(canvas.toDataURL(ext, 0.85));
+        } else {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(new Error("读取图片失败"));
+          r.readAsDataURL(file);
+        }
+      } catch (e) {
+        reject(e);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片解析失败"));
+    };
+    img.src = url;
+  });
+}
+
+const MAX_IMAGES = 4;
+
 export function PiChatView() {
   const [treeOpen, setTreeOpen] = useState(false);
   // 主区应用右键菜单（空白/消息区右键）
@@ -31,6 +75,8 @@ export function PiChatView() {
   };
   const [ui, setUi] = useState<PiChatUiState>(newUiState);
   const [input, setInput] = useState("");
+  // 待发送的图片附件（粘贴剪贴板图片），随消息一起发给 PI 多模态
+  const [pendingImages, setPendingImages] = useState<{ data: string; mimeType: string }[]>([]);
   const [commands, setCommands] = useState<{ name: string; desc: string }[]>([]);
   const [completer, setCompleter] = useState<{
     open: boolean;
@@ -186,15 +232,42 @@ export function PiChatView() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [ui.messages, ui.busy]);
 
+  // 粘贴剪贴板图片 → base64 附件（通知预览区；不拦截纯文本粘贴）
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: Blob[] = [];
+    for (const it of items) {
+      if (typeof it.type === "string" && it.type.startsWith("image/")) {
+        const f = it.getAsFile?.();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length === 0) return; // 纯文本粘贴交给默认行为
+    e.preventDefault();
+    void (async () => {
+      const added: { data: string; mimeType: string }[] = [];
+      for (const f of files.slice(0, MAX_IMAGES)) {
+        const dataUrl = await imageFileToDataUrl(f).catch(() => null);
+        if (!dataUrl) continue;
+        const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+        if (m) added.push({ data: m[2], mimeType: m[1] });
+      }
+      if (added.length) setPendingImages((prev) => [...prev, ...added].slice(0, MAX_IMAGES));
+    })();
+  }, []);
+
   const send = useCallback(
     (text?: string) => {
       const raw = (text ?? input).trim();
-      if (!raw) return;
+      const imgs = [...pendingImages];
+      if (!raw && imgs.length === 0) return;
       const sendWith = async () => {
         const content = raw;
         setInput("");
+        setPendingImages([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
-        setUi((prev) => addUserMessage(prev, content));
+        setUi((prev) => addUserMessage(prev, content, imgs));
         const lastActivity = lastEventRef.current;
         // 记录本次发送后的事件流（诊断用：看 prompt 是否被接受、事件是否回来）
         const sentTypes = new Set<string>();
@@ -219,7 +292,12 @@ export function PiChatView() {
           }
         }
 
-        void piSend({ type: "prompt", message: payload, streamingBehavior: "steer" })
+        void piSend({
+          type: "prompt",
+          message: payload,
+          streamingBehavior: "steer",
+          images: imgs.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+        })
           .then((res) => {
             if (res && res.success === false) {
               console.warn("[diag] prompt rejected: " + (res.error ?? ""));
@@ -260,7 +338,7 @@ export function PiChatView() {
       };
       void sendWith();
     },
-    [input],
+    [input, pendingImages],
   );
 
   const stop = useCallback(() => {
@@ -405,9 +483,26 @@ export function PiChatView() {
                   ))}
                 </div>
               )}
+              {pendingImages.length > 0 && (
+                <div className="chat__images">
+                  {pendingImages.map((img, i) => (
+                    <div className="chat__img" key={i}>
+                      <img src={`data:${img.mimeType};base64,${img.data}`} alt={`图 ${i + 1}`} />
+                      <button
+                        className="chat__img-del"
+                        title="移除图片"
+                        onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 className="chat__textarea"
+                onPaste={handlePaste}
                 value={input}
                 placeholder="发送给 PI…（/ 命令补全，Enter 发送，Shift+Enter 换行）"
                 rows={1}
@@ -447,7 +542,7 @@ export function PiChatView() {
                 ■ 停止
               </button>
             ) : (
-              <button className="btn btn--primary" onClick={() => send()} disabled={!input.trim()}>
+              <button className="btn btn--primary" onClick={() => send()} disabled={!input.trim() && pendingImages.length === 0}>
                 发送
               </button>
             )}
@@ -555,10 +650,23 @@ const MessageCard = memo(function MessageCard({
   if (msg.role === "user") {
     const textBlock = msg.blocks.find((b) => b.kind === "text");
     const plain = textBlock?.text ?? "";
+    const images = msg.blocks.filter((b): b is Extract<PiBlock, { kind: "image" }> => b.kind === "image");
     return (
       <div className="msg msg--user">
         <div className="msg__stack">
           <div className="msg__body msg__body--user">
+            {images.length > 0 && (
+              <div className="msg__images">
+                {images.map((im, i) => (
+                  <img
+                    key={i}
+                    className="msg__image"
+                    src={`data:${im.mimeType};base64,${im.data}`}
+                    alt={`图片 ${i + 1}`}
+                  />
+                ))}
+              </div>
+            )}
             <div className="msg__text">{plain ? <p>{plain}</p> : null}</div>
           </div>
           <MsgOps text={plain} canResend={!!plain} />
@@ -646,6 +754,12 @@ function MsgOps({ text, canResend, resendText }: { text: string; canResend: bool
 
 function BlockView({ block }: { block: PiBlock }) {
   switch (block.kind) {
+    case "image":
+      return (
+        <div className="msg__images">
+          <img className="msg__image" src={`data:${block.mimeType};base64,${block.data}`} alt="图片" />
+        </div>
+      );
     case "text":
       return <MarkdownBody text={block.text} />;
     case "thinking":
