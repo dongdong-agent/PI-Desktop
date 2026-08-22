@@ -138,32 +138,41 @@ export function PiChatView() {
   const autoSaveRef = useRef(autoSave);
   autoSaveRef.current = autoSave;
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
-  const saveSessionMarkdown = useCallback(async (dir: string, filename: string): Promise<string | null> => {
-    try {
-      const res = await piSend({ type: "export_session", format: "markdown" });
-      if (!res?.success || !res.data?.content) return null;
-      const { join } = await import("@tauri-apps/api/path");
-      const { invoke } = await import("@tauri-apps/api/core");
-      const full = await join(dir, filename);
-      await invoke("write_text_file", { path: full, content: res.data.content });
-      return full;
-    } catch {
-      return null;
-    }
-  }, []);
+  // 导出会话全文（markdown 阅读用 / jsonl 完整备份）到指定目录
+  const saveSessionTo = useCallback(
+    async (dir: string, filename: string, format: "markdown" | "jsonl"): Promise<string | null> => {
+      try {
+        const res = await piSend({ type: "export_session", format });
+        if (!res?.success || !res.data?.content) return null;
+        const { join } = await import("@tauri-apps/api/path");
+        const { invoke } = await import("@tauri-apps/api/core");
+        const full = await join(dir, filename);
+        await invoke("write_text_file", { path: full, content: res.data.content });
+        return full;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
   // 自动保存：每轮对话结束（agent_end）把最新全文写入 Documents/PI Agent 对话记录/
+  // （markdown 给人看 + jsonl 完整可恢复备份）
   const autoExport = useCallback(async () => {
     try {
       const { documentDir } = await import("@tauri-apps/api/path");
       const dir = await documentDir();
       const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
-      const file = `${proj}-对话记录-${new Date().toISOString().slice(0, 10)}.md`;
-      const saved = await saveSessionMarkdown(`${dir}PI Agent 对话记录`, file);
-      if (saved) setLastSavedAt(Date.now());
+      const date = new Date().toISOString().slice(0, 10);
+      const base = `${dir}PI Agent 对话记录`;
+      const [md, jl] = await Promise.all([
+        saveSessionTo(base, `${proj}-对话记录-${date}.md`, "markdown"),
+        saveSessionTo(base, `${proj}-对话记录-${date}.jsonl`, "jsonl"),
+      ]);
+      if (md || jl) setLastSavedAt(Date.now());
     } catch {
       /* ignore */
     }
-  }, [saveSessionMarkdown]);
+  }, [saveSessionTo]);
   const toggleAutoSave = useCallback(() => {
     setAutoSave((v) => {
       const next = !v;
@@ -176,21 +185,51 @@ export function PiChatView() {
     });
   }, []);
   // 手动保存：导出 markdown → 弹保存对话框写本地
-  const saveNow = useCallback(async () => {
+  const saveNow = useCallback(
+    async (format: "markdown" | "jsonl" = "markdown") => {
+      try {
+        const res = await piSend({ type: "export_session", format });
+        if (!res?.success || !res.data?.content) return;
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { invoke } = await import("@tauri-apps/api/core");
+        const date = new Date().toISOString().slice(0, 10);
+        const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
+        const path = await save({
+          defaultPath: `${proj}-对话记录-${date}.${format === "jsonl" ? "jsonl" : "md"}`,
+          filters:
+            format === "jsonl"
+              ? [{ name: "PI 会话备份 (JSONL)", extensions: ["jsonl"] }]
+              : [{ name: "Markdown", extensions: ["md"] }],
+        });
+        if (!path) return;
+        await invoke("write_text_file", { path, content: res.data.content });
+        setLastSavedAt(Date.now());
+      } catch {
+        /* ignore */
+      }
+    },
+    [],
+  );
+  // 导入会话：选择 jsonl 文件 → 打开为对话（可继续在 PI 中对话）
+  const importSession = useCallback(async () => {
     try {
-      const res = await piSend({ type: "export_session", format: "markdown" });
-      if (!res?.success || !res.data?.content) return;
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const { invoke } = await import("@tauri-apps/api/core");
-      const date = new Date().toISOString().slice(0, 10);
-      const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
-      const path = await save({
-        defaultPath: `${proj}-对话记录-${date}.md`,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "PI 会话 (JSONL)", extensions: ["jsonl"] }],
+        title: "导入 PI 会话文件",
       });
-      if (!path) return;
-      await invoke("write_text_file", { path, content: res.data.content });
-      setLastSavedAt(Date.now());
+      if (!picked || Array.isArray(picked)) return;
+      const res = await piSend({ type: "open_dialogue", sessionPath: picked as string });
+      if (res?.success) {
+        usePiUiStore.setState({
+          currentDialogueId: res.data?.dialogueId ?? null,
+          currentCwd: res.data?.cwd ?? null,
+        });
+        window.dispatchEvent(new CustomEvent("pi:session-changed"));
+      } else {
+        setUi((prev) => markLastError(prev, `导入失败：${res?.error ?? "未知原因"}`));
+      }
     } catch {
       /* ignore */
     }
@@ -697,7 +736,8 @@ export function PiChatView() {
 
           <ToolBar
             onTree={() => setTreeOpen(true)}
-            onSave={() => void saveNow()}
+            onSave={(f) => void saveNow(f)}
+            onImport={() => void importSession()}
             autoSave={autoSave}
             onToggleAutoSave={toggleAutoSave}
             lastSavedAt={lastSavedAt}
@@ -963,12 +1003,14 @@ function BlockView({ block }: { block: PiBlock }) {
 const ToolBar = memo(function ToolBar({
   onTree,
   onSave,
+  onImport,
   autoSave,
   onToggleAutoSave,
   lastSavedAt,
 }: {
   onTree: () => void;
-  onSave: () => void;
+  onSave: (format: "markdown" | "jsonl") => void;
+  onImport: () => void;
   autoSave: boolean;
   onToggleAutoSave: () => void;
   lastSavedAt: number | null;
@@ -1156,15 +1198,25 @@ const ToolBar = memo(function ToolBar({
 
       <button
         className="chip chip--sm"
-        onClick={onSave}
+        onClick={() => onSave("markdown")}
         title="保存当前对话为 Markdown（本地导出全文）"
       >
-        💾 保存对话
+        💾 存 MD
+      </button>
+      <button
+        className="chip chip--sm"
+        onClick={() => onSave("jsonl")}
+        title="导出当前会话为 JSONL（完整备份，可导入恢复）"
+      >
+        💾 存 JSONL
+      </button>
+      <button className="chip chip--sm" onClick={onImport} title="导入 PI 会话文件（jsonl），继续对话">
+        📥 导入
       </button>
       <button
         className={`chip chip--sm${autoSave ? " chip--active" : ""}`}
         onClick={onToggleAutoSave}
-        title="自动保存：每轮对话结束自动写入 文档/PI Agent 对话记录/（按项目+日期命名，保持最新）"
+        title="自动保存：每轮对话结束自动写入 文档/PI Agent 对话记录/（MD + JSONL 双备份）"
       >
         ⏺ 自动保存{autoSave ? "·开" : "·关"}
       </button>
