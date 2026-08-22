@@ -3678,6 +3678,17 @@ body {
   background: var(--bg-hover);
   outline: 1px solid var(--accent);
 }
+
+.treepanel__ops {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.treepanel__fork--continue {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .treepanel__role {
   flex: none;
   width: 18px;
