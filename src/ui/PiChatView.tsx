@@ -184,25 +184,42 @@ export function PiChatView() {
       return next;
     });
   }, []);
-  // 手动保存：导出 markdown → 弹保存对话框写本地
+  // 手动保存：导出 markdown → 弹保存对话框写本地（支持 md/jsonl/html/txt）
   const saveNow = useCallback(
-    async (format: "markdown" | "jsonl" = "markdown") => {
+    async (format: "markdown" | "jsonl" | "html" | "txt" = "markdown") => {
       try {
-        const res = await piSend({ type: "export_session", format });
+        const res = await piSend({ type: "export_session", format: "markdown" });
         if (!res?.success || !res.data?.content) return;
         const { save } = await import("@tauri-apps/plugin-dialog");
         const { invoke } = await import("@tauri-apps/api/core");
         const date = new Date().toISOString().slice(0, 10);
         const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
+        let content = res.data.content;
+        let ext = "md";
+        let filters = [{ name: "Markdown", extensions: ["md"] }];
+        if (format === "jsonl") {
+          const jl = await piSend({ type: "export_session", format: "jsonl" });
+          if (!jl?.success) return;
+          content = jl.data.content;
+          ext = "jsonl";
+          filters = [{ name: "PI 会话备份 (JSONL)", extensions: ["jsonl"] }];
+        } else if (format === "html") {
+          const { sessionHtml } = await import("../pi/sessionHtml");
+          content = sessionHtml(res.data.content, `${proj} PI Agent 对话记录 ${date}`);
+          ext = "html";
+          filters = [{ name: "HTML 对话记录", extensions: ["html"] }];
+        } else if (format === "txt") {
+          const { sessionPlain } = await import("../pi/sessionHtml");
+          content = sessionPlain(res.data.content);
+          ext = "txt";
+          filters = [{ name: "纯文本", extensions: ["txt"] }];
+        }
         const path = await save({
-          defaultPath: `${proj}-对话记录-${date}.${format === "jsonl" ? "jsonl" : "md"}`,
-          filters:
-            format === "jsonl"
-              ? [{ name: "PI 会话备份 (JSONL)", extensions: ["jsonl"] }]
-              : [{ name: "Markdown", extensions: ["md"] }],
+          defaultPath: `${proj}-对话记录-${date}.${ext}`,
+          filters,
         });
         if (!path) return;
-        await invoke("write_text_file", { path, content: res.data.content });
+        await invoke("write_text_file", { path, content });
         setLastSavedAt(Date.now());
       } catch {
         /* ignore */
@@ -1013,7 +1030,7 @@ const ToolBar = memo(function ToolBar({
   lastSavedAt,
 }: {
   onTree: () => void;
-  onSave: (format: "markdown" | "jsonl") => void;
+  onSave: (format: "markdown" | "jsonl" | "html" | "txt") => void;
   onImport: () => void;
   autoSave: boolean;
   onToggleAutoSave: () => void;
@@ -1206,6 +1223,13 @@ const ToolBar = memo(function ToolBar({
         title="保存当前对话为 Markdown（本地导出全文）"
       >
         💾 存 MD
+      </button>
+      <button
+        className="chip chip--sm"
+        onClick={() => onSave("html")}
+        title="导出为带样式的 HTML 对话记录页（可分享/归档）"
+      >
+        📄 存 HTML
       </button>
       <button
         className="chip chip--sm"
