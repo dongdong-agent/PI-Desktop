@@ -14,6 +14,7 @@ interface Drive {
   proc: ChildProcess;
   send: (cmd: Record<string, unknown>) => Promise<any>;
   close: () => Promise<void>;
+  promptQueue: any[];
 }
 
 function startSidecar(): Drive {

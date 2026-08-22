@@ -98,6 +98,23 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
         set({ currentDialogueId: initRes.data.dialogueId });
         if (initRes.data.cwd) set({ currentCwd: initRes.data.cwd });
       }
+      // 恢复「进行中」对话池：上次会话保留下来的其他对话（重启后仍可切回）
+      const activePath = initRes?.data?.sessionFile ?? null;
+      try {
+        const raw = JSON.parse(localStorage.getItem("aiwb:dlg-pool") ?? "[]") as string[];
+        if (Array.isArray(raw) && raw.length > 0) {
+          const paths = raw.filter((p) => typeof p === "string" && p !== activePath);
+          // 并行恢复，最多 5 个（避免启动过重）；失败静默
+          await Promise.all(
+            paths.slice(0, 5).map((p) =>
+              piSend({ type: "open_dialogue", sessionPath: p }).catch(() => null),
+            ),
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+      void get().refreshDialogues();
       const [projRes, stateRes, modelRes, provRes] = await Promise.all([
         piSend({ type: "list_projects" }),
         piSend({ type: "get_state" }),
@@ -177,6 +194,15 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
         const cur = res.data?.currentDialogueId ?? null;
         if (cur && cur !== get().currentDialogueId) {
           set({ currentDialogueId: cur });
+        }
+        // 持久化对话池（sessionPath 列表）：重启后恢复「进行中」列表用
+        const paths = (res.data?.dialogues ?? [])
+          .map((d: { sessionPath?: string | null }) => d.sessionPath)
+          .filter((p: string | null | undefined): p is string => typeof p === "string" && p.length > 0);
+        try {
+          localStorage.setItem("aiwb:dlg-pool", JSON.stringify(paths.slice(0, 8)));
+        } catch {
+          /* ignore */
         }
       }
     } catch {
