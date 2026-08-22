@@ -1009,6 +1009,58 @@ body {
   opacity: 1;
 }
 
+/* 消息多选 */
+.msg--user,
+.msg--assistant {
+  position: relative;
+}
+
+.msg--selected {
+  outline: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.msg__sel {
+  position: absolute;
+  top: 6px;
+  left: 4px;
+  z-index: 2;
+}
+
+.msg__sel--assistant {
+  left: 30px;
+}
+
+.msg__sel input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.selbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle, var(--bg-hover));
+}
+
+.selbar__count {
+  font-size: 0.7857rem;
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+.selbar__exit {
+  margin-left: auto;
+}
+
+.selbar .chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .msg-ops__btn {
   border: none;
   background: transparent;

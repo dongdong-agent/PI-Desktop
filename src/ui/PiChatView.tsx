@@ -67,6 +67,21 @@ const MAX_IMAGES = 4;
 
 export function PiChatView() {
   const [treeOpen, setTreeOpen] = useState(false);
+  // 消息多选模式：选中多条 → 复制/导出
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const exitSelect = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
   // 切换项目/会话中（loading）时禁用发送，避免指令错发到上一个项目
   const loading = usePiUiStore((s) => s.loading);
   // 主区应用右键菜单（空白/消息区右键）
@@ -679,6 +694,9 @@ export function PiChatView() {
                 <MessageWindow
                   messages={ui.messages}
                   scrollRef={scrollRef}
+                  selectMode={selectMode}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleSelect}
                 />
                 {ui.busy && <div className="pi-busy">PI 正在处理…</div>}
               </div>
@@ -686,6 +704,68 @@ export function PiChatView() {
             {ui.lastError && <div className="pi-errorbar">⚠️ {ui.lastError}</div>}
           </div>
 
+          {/* 消息多选操作条 */}
+          {selectMode && (
+            <div className="selbar">
+              <span className="selbar__count">已选 {selectedIds.size} 条</span>
+              <button
+                className="chip chip--sm"
+                onClick={() => {
+                  // 复制选中消息纯文本
+                  const texts = ui.messages.filter((m) => selectedIds.has(m.id)).map((m) =>
+                    msgPlainText(m.blocks),
+                  );
+                  void navigator.clipboard.writeText(texts.filter(Boolean).join("\n\n"));
+                }}
+                disabled={selectedIds.size === 0}
+              >
+                复制选中
+              </button>
+              <button
+                className="chip chip--sm"
+                onClick={() => {
+                  // 导出选中消息为 Markdown
+                  const parts = ui.messages.filter((m) => selectedIds.has(m.id)).map((m) => {
+                    const header = m.role === "user" ? "## 👤 用户" : "## 🤖 PI";
+                    const text = msgPlainText(m.blocks);
+                    return text ? `${header}\n\n${text}` : null;
+                  });
+                  const md = parts.filter(Boolean).join("\n\n");
+                  if (!md) return;
+                  void (async () => {
+                    try {
+                      const { save } = await import("@tauri-apps/plugin-dialog");
+                      const { invoke } = await import("@tauri-apps/api/core");
+                      const path = await save({
+                        defaultPath: `选中消息-${new Date().toISOString().slice(0, 10)}.md`,
+                        filters: [{ name: "Markdown", extensions: ["md"] }],
+                      });
+                      if (!path) return;
+                      await invoke("write_text_file", { path, content: md });
+                    } catch {
+                      /* ignore */
+                    }
+                  })();
+                }}
+                disabled={selectedIds.size === 0}
+              >
+                导出选中为 MD
+              </button>
+              <button
+                className="chip chip--sm"
+                onClick={() => {
+                  // 全选（仅当前会话消息）
+                  if (selectedIds.size === ui.messages.length) exitSelect();
+                  else setSelectedIds(new Set(ui.messages.map((m) => m.id)));
+                }}
+              >
+                {selectedIds.size === ui.messages.length ? "取消全选" : "全选"}
+              </button>
+              <button className="chip chip--sm selbar__exit" onClick={exitSelect}>
+                ✕ 退出选择
+              </button>
+            </div>
+          )}
           <div className={`chat__inputbar${isNewChat ? " chat__inputbar--centered" : ""}`}>
             <div className="chat__composer">
               {completer.open && completer.items.length > 0 && (
@@ -805,6 +885,8 @@ export function PiChatView() {
             onSave={(f) => void saveNow(f)}
             onImport={() => void importSession()}
             onShare={() => setShareOpen(true)}
+            onSelect={() => setSelectMode((v) => !v)}
+            selectMode={selectMode}
             autoSave={autoSave}
             onToggleAutoSave={toggleAutoSave}
             lastSavedAt={lastSavedAt}
@@ -911,7 +993,19 @@ export function PiChatView() {
  * 长会话无缝滚动：react-virtual 虚拟化——DOM 只渲染可见区 (+overscan)，
  * 万条消息也能直接滚到底，无需「加载更多」；消息高度动态测量（measureElement）。
  */
-function MessageWindow({ messages, scrollRef }: { messages: PiViewMessage[]; scrollRef: { current: HTMLDivElement | null } }) {
+function MessageWindow({
+  messages,
+  scrollRef,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
+}: {
+  messages: PiViewMessage[];
+  scrollRef: { current: HTMLDivElement | null };
+  selectMode: boolean;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+}) {
   const total = messages.length;
   const virtualizer = useVirtualizer({
     count: total,
@@ -957,7 +1051,13 @@ function MessageWindow({ messages, scrollRef }: { messages: PiViewMessage[]; scr
               transform: `translateY(${vi.start}px)`,
             }}
           >
-            <MessageCard msg={m} prevUserText={prevUserCache.get(vi.index) ?? ""} />
+            <MessageCard
+              msg={m}
+              prevUserText={prevUserCache.get(vi.index) ?? ""}
+              selectMode={selectMode}
+              selected={selectedIds.has(m.id)}
+              onToggleSelect={() => onToggleSelect(m.id)}
+            />
           </div>
         );
       })}
@@ -968,9 +1068,15 @@ function MessageWindow({ messages, scrollRef }: { messages: PiViewMessage[]; scr
 const MessageCard = memo(function MessageCard({
   msg,
   prevUserText = "",
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
 }: {
   msg: { role: "user" | "assistant"; blocks: PiBlock[]; status: string; id: string };
   prevUserText?: string;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   // 消息编辑（仅用户消息）：fork 到该消息之前 → 新会话用新文本重发
   const [editing, setEditing] = useState(false);
@@ -995,8 +1101,16 @@ const MessageCard = memo(function MessageCard({
       }
     };
     return (
-      <div className="msg msg--user">
+      <div
+        className={`msg msg--user${selected ? " msg--selected" : ""}`}
+        onClick={selectMode ? onToggleSelect : undefined}
+      >
         <div className="msg__stack">
+          {selectMode && (
+            <div className={`msg__sel${selected ? " msg__sel--on" : ""}`}>
+              <input type="checkbox" checked={selected} onChange={onToggleSelect} />
+            </div>
+          )}
           {editing ? (
             <div className="msg__edit">
               <textarea
@@ -1056,7 +1170,15 @@ const MessageCard = memo(function MessageCard({
   const plain = msgPlainText(msg.blocks);
 
   return (
-    <div className="msg msg--assistant">
+    <div
+      className={`msg msg--assistant${selected ? " msg--selected" : ""}`}
+      onClick={selectMode ? onToggleSelect : undefined}
+    >
+      {selectMode && (
+        <div className={`msg__sel msg__sel--assistant${selected ? " msg__sel--on" : ""}`}>
+          <input type="checkbox" checked={selected} onChange={onToggleSelect} />
+        </div>
+      )}
       <div className="msg__avatar" title="PI">PI</div>
       <div className="msg__body">
         {msg.blocks.map((block, i) => (
@@ -1204,6 +1326,8 @@ const ToolBar = memo(function ToolBar({
   onSave,
   onImport,
   onShare,
+  onSelect,
+  selectMode,
   autoSave,
   onToggleAutoSave,
   lastSavedAt,
@@ -1212,6 +1336,8 @@ const ToolBar = memo(function ToolBar({
   onSave: (format: "markdown" | "jsonl" | "html" | "txt") => void;
   onImport: () => void;
   onShare: () => void;
+  onSelect: () => void;
+  selectMode: boolean;
   autoSave: boolean;
   onToggleAutoSave: () => void;
   lastSavedAt: number | null;
@@ -1389,6 +1515,13 @@ const ToolBar = memo(function ToolBar({
         {compacting ? "压缩中…" : "⚙ 压缩上下文"}
       </button>
 
+      <button
+        className={`chip chip--sm${selectMode ? " chip--active" : ""}`}
+        onClick={onSelect}
+        title="进入多选模式：点消息勾选，批量复制/导出"
+      >
+        ☑️ 选择
+      </button>
       <button
         className="chip chip--sm"
         onClick={onTree}
