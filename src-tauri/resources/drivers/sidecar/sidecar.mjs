@@ -801,7 +801,16 @@ async function handleCommand(cmd) {
 
       case "get_available_models": {
         const mr = runtime?.services?.modelRuntime;
-        const models = mr ? await mr.getAvailable() : [];
+        // 快速返回本地快照（同步，不阻塞 UI）；网络模型目录刷新改为后台触发，
+        // 空快照时前端 loadAll 已有自动重试（每 2s，最多 8 次）兜底。
+        const models = mr ? mr.getModels() : [];
+        if (mr && models.length === 0) {
+          // 异步触发一次完整刷新（含网络目录），不等待
+          void mr
+            .getAvailable({ allowNetwork: true })
+            .then(() => {})
+            .catch(() => {});
+        }
         sendResponse(requestId, "get_available_models", true, {
           models: (models ?? []).map((m) => ({
             id: m.id,

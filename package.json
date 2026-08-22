@@ -12,6 +12,7 @@
     "test:sidecar": "node drivers/sidecar/test-drive.mjs",
     "test:dialogues": "node drivers/sidecar/test-dialogues.mjs",
     "test:full": "node drivers/sidecar/test-full.mjs",
+    "release": "node scripts/release.mjs",
     "test:all": "vitest run && node drivers/sidecar/test-drive.mjs"
   },
   "dependencies": {
