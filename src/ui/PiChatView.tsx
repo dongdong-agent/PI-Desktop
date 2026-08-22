@@ -868,32 +868,84 @@ const MessageCard = memo(function MessageCard({
   msg,
   prevUserText = "",
 }: {
-  msg: { role: "user" | "assistant"; blocks: PiBlock[]; status: string };
+  msg: { role: "user" | "assistant"; blocks: PiBlock[]; status: string; id: string };
   prevUserText?: string;
 }) {
+  // 消息编辑（仅用户消息）：fork 到该消息之前 → 新会话用新文本重发
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   if (msg.role === "user") {
     const textBlock = msg.blocks.find((b) => b.kind === "text");
     const plain = textBlock?.text ?? "";
     const images = msg.blocks.filter((b): b is Extract<PiBlock, { kind: "image" }> => b.kind === "image");
+    const confirmEdit = async () => {
+      const text = draft.trim();
+      if (!text) {
+        setEditing(false);
+        return;
+      }
+      setEditing(false);
+      // fork（position=before）到此用户消息 → 新分支从它之前开始
+      const res = await piSend({ type: "fork", entryId: msg.id }).catch(() => null);
+      if (res?.success) {
+        window.dispatchEvent(new CustomEvent("pi:session-changed"));
+        // 发送编辑后文本（成为新分支的第一条；复用重发通道）
+        window.dispatchEvent(new CustomEvent("pi:resend", { detail: text }));
+      }
+    };
     return (
       <div className="msg msg--user">
         <div className="msg__stack">
-          <div className="msg__body msg__body--user">
-            {images.length > 0 && (
-              <div className="msg__images">
-                {images.map((im, i) => (
-                  <img
-                    key={i}
-                    className="msg__image"
-                    src={`data:${im.mimeType};base64,${im.data}`}
-                    alt={`图片 ${i + 1}`}
-                  />
-                ))}
+          {editing ? (
+            <div className="msg__edit">
+              <textarea
+                className="msg__edit-input"
+                rows={3}
+                value={draft}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => setEditing(false)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void confirmEdit();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+              <div className="msg__edit-btns">
+                <button className="btn btn--primary btn--sm" onMouseDown={(e) => e.preventDefault()} onClick={() => void confirmEdit()}>
+                  保存并重发
+                </button>
+                <button className="btn btn--sm" onClick={() => setEditing(false)}>
+                  取消
+                </button>
               </div>
-            )}
-            <div className="msg__text">{plain ? <p>{plain}</p> : null}</div>
-          </div>
-          <MsgOps text={plain} canResend={!!plain} />
+            </div>
+          ) : (
+            <>
+              <div className="msg__body msg__body--user">
+                {images.length > 0 && (
+                  <div className="msg__images">
+                    {images.map((im, i) => (
+                      <img
+                        key={i}
+                        className="msg__image"
+                        src={`data:${im.mimeType};base64,${im.data}`}
+                        alt={`图片 ${i + 1}`}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="msg__text">{plain ? <p>{plain}</p> : null}</div>
+              </div>
+              <MsgOps
+                text={plain}
+                canResend={!!plain}
+                onEdit={() => {
+                  setDraft(plain);
+                  setEditing(true);
+                }}
+              />
+            </>
+          )}
         </div>
       </div>
     );
@@ -924,8 +976,18 @@ function msgPlainText(blocks: PiBlock[]): string {
     .join("\n\n");
 }
 
-/** 消息操作条：复制 / 重发 / 保存为文档（hover 显示，低调） */
-function MsgOps({ text, canResend, resendText }: { text: string; canResend: boolean; resendText?: string }) {
+/** 消息操作条：复制 / 重发 / 保存为文档 / 编辑（hover 显示，低调） */
+function MsgOps({
+  text,
+  canResend,
+  resendText,
+  onEdit,
+}: {
+  text: string;
+  canResend: boolean;
+  resendText?: string;
+  onEdit?: () => void;
+}) {
   const [saved, setSaved] = useState(false);
   const saveAsDoc = async () => {
     if (!text) return;
@@ -972,6 +1034,11 @@ function MsgOps({ text, canResend, resendText }: { text: string; canResend: bool
       <button className="msg-ops__btn" title="保存为 Markdown 文档" onClick={() => void saveAsDoc()}>
         {saved ? "已保存" : "保存"}
       </button>
+      {onEdit && (
+        <button className="msg-ops__btn" title="编辑这条消息，从此处重新生成（fork 分支）" onClick={onEdit}>
+          ✏️ 编辑
+        </button>
+      )}
     </div>
   );
 }

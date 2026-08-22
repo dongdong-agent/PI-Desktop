@@ -936,6 +936,37 @@ body {
   transition: opacity 0.12s ease;
 }
 
+/* 消息编辑态 */
+.msg__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.msg__edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
+  background: var(--bg-panel);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font: 13px/1.6 inherit, "Microsoft YaHei", sans-serif;
+  resize: vertical;
+  outline: none;
+}
+
+.msg__edit-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.btn--sm {
+  padding: 4px 10px;
+  font-size: 0.7857rem;
+}
+
 .msg:hover .msg-ops,
 .msg-ops:focus-within {
   opacity: 1;
