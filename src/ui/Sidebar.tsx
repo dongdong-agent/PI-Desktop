@@ -3,7 +3,7 @@
  * 数据来自 list_all_sessions（按项目分组，全部真实 PI 会话）。
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
+import { applyAutoTheme, applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
 import { loadZoom } from "../app/zoom";
 import { bindPiEvents, piSend } from "../pi/bridge";
 import { projectShortName, usePiUiStore, type DialogueItem } from "../pi/piUiStore";
@@ -1011,7 +1011,17 @@ export function Sidebar() {
                   className={`theme-picker__item${t.id === theme ? " theme-picker__item--active" : ""}`}
                   onClick={() => {
                     setTheme(t.id);
-                    applyTheme(t.id);
+                    if (t.id === "auto") {
+                      // 跟随系统：保存 auto，按系统偏好应用实际主题
+                      try {
+                        localStorage.setItem("aiwb:theme", "auto");
+                      } catch {
+                        /* ignore */
+                      }
+                      applyAutoTheme();
+                    } else {
+                      applyTheme(t.id);
+                    }
                     setThemePicker(false);
                   }}
                 >

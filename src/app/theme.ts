@@ -2,7 +2,7 @@
  * 主题管理（皮肤系统）：多主题注册表 + 读写 localStorage + 应用到根节点。
  * 皮肤 = 一套 CSS 变量集合；换肤即换 data-theme，业务样式全部走变量。
  */
-export type ThemeName = "light" | "dark" | "warm" | "mint" | "deep" | "forest" | "ocean";
+export type ThemeName = "auto" | "light" | "dark" | "warm" | "mint" | "deep" | "forest" | "ocean";
 
 export interface ThemeMeta {
   id: ThemeName;
@@ -12,6 +12,7 @@ export interface ThemeMeta {
 
 /** 主题注册表（皮肤系统的扩展面：新增皮肤 = 在 CSS 加一套变量 + 在此登记） */
 export const THEMES: ThemeMeta[] = [
+  { id: "auto", label: "🔆 跟随系统", hint: "随系统深色模式自动切换" },
   { id: "light", label: "☀️ 浅色", hint: "清爽明亮" },
   { id: "dark", label: "🌙 深色", hint: "沉浸护眼" },
   { id: "warm", label: "🕯️ 暖阳", hint: "暖调低刺激" },
@@ -30,7 +31,33 @@ export function loadTheme(): ThemeName {
   } catch {
     /* ignore */
   }
-  return "light";
+  return "auto";
+}
+
+/** 当前系统深色偏好 */
+export function systemPrefersDark(): boolean {
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch {
+    return false;
+  }
+}
+
+/** 跟随系统：把 auto 解析为实际 light/dark 并应用到根节点 */
+export function applyAutoTheme(): void {
+  document.documentElement.dataset.theme = systemPrefersDark() ? "dark" : "light";
+}
+
+/** 注册系统深色变化监听（返回取消函数）；仅在 auto 模式下有意义 */
+export function watchSystemTheme(onChange: () => void): () => void {
+  try {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => onChange();
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  } catch {
+    return () => {};
+  }
 }
 
 export function applyTheme(theme: ThemeName, persist = true): void {

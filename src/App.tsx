@@ -3,7 +3,7 @@
  * 带 ErrorBoundary：渲染崩溃时显示错误详情而不是白屏。
  */
 import { Component, useEffect, type ReactNode } from "react";
-import { applyTheme, loadTheme } from "./app/theme";
+import { applyAutoTheme, applyTheme, loadTheme, watchSystemTheme } from "./app/theme";
 import { applyZoom, loadZoom, zoomIn, zoomOut, zoomReset } from "./app/zoom";
 import { Sidebar } from "./ui/Sidebar";
 import { PiChatView } from "./ui/PiChatView";
@@ -91,12 +91,21 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 export default function App() {
   // 启动时恢复主题与缩放
   useEffect(() => {
-    applyTheme(loadTheme(), false);
+    const saved = loadTheme();
+    if (saved === "auto") applyAutoTheme();
+    else applyTheme(saved, false);
     applyZoom(loadZoom(), false);
+    // 跟随系统：auto 模式下监听系统深色变化实时切换
+    const un = watchSystemTheme(() => {
+      if (loadTheme() === "auto") applyAutoTheme();
+    });
     // 全局禁用浏览器默认右键菜单（改由应用菜单接管，各区域自行注册 contextmenu）
     const blockMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("contextmenu", blockMenu);
-    return () => window.removeEventListener("contextmenu", blockMenu);
+    return () => {
+      un();
+      window.removeEventListener("contextmenu", blockMenu);
+    };
   }, []);
 
   // Ctrl/Cmd + +/-/0 缩放

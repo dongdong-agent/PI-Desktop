@@ -1245,6 +1245,22 @@ function MsgOps({
       <button className="msg-ops__btn" title="复制全文" onClick={() => void navigator.clipboard.writeText(text)}>
         复制
       </button>
+      <button
+        className="msg-ops__btn"
+        title="把这条消息作为引用插入输入框（供追问/反驳）"
+        onClick={() =>
+          window.dispatchEvent(
+            new CustomEvent("pi:insert-text", {
+              detail: text
+                .split("\n")
+                .map((l) => `> ${l}`)
+                .join("\n") + "\n\n",
+            }),
+          )
+        }
+      >
+        引用
+      </button>
       {canResend && (
         <button
           className="msg-ops__btn"
