@@ -754,6 +754,40 @@ export function PiChatView() {
               <button
                 className="chip chip--sm"
                 onClick={() => {
+                  // 导出选中消息为带样式 HTML（可分享/归档）
+                  const parts = ui.messages.filter((m) => selectedIds.has(m.id)).map((m) => {
+                    const header = m.role === "user" ? "## 👤 用户" : "## 🤖 PI";
+                    const text = msgPlainText(m.blocks);
+                    return text ? `${header}\n\n${text}` : null;
+                  });
+                  const md = parts.filter(Boolean).join("\n\n");
+                  if (!md) return;
+                  void (async () => {
+                    try {
+                      const { save } = await import("@tauri-apps/plugin-dialog");
+                      const { invoke } = await import("@tauri-apps/api/core");
+                      const { sessionHtml } = await import("../pi/sessionHtml");
+                      const path = await save({
+                        defaultPath: `选中消息-${new Date().toISOString().slice(0, 10)}.html`,
+                        filters: [{ name: "HTML 对话记录", extensions: ["html"] }],
+                      });
+                      if (!path) return;
+                      await invoke("write_text_file", {
+                        path,
+                        content: sessionHtml(md, "PI Agent 选中消息"),
+                      });
+                    } catch {
+                      /* ignore */
+                    }
+                  })();
+                }}
+                disabled={selectedIds.size === 0}
+              >
+                导出选中为 HTML
+              </button>
+              <button
+                className="chip chip--sm"
+                onClick={() => {
                   // 全选（仅当前会话消息）
                   if (selectedIds.size === ui.messages.length) exitSelect();
                   else setSelectedIds(new Set(ui.messages.map((m) => m.id)));
