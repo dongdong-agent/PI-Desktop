@@ -37,6 +37,13 @@ function maskKey(k: string): string {
   return `${k.slice(0, 6)}…${k.slice(-4)}`;
 }
 
+/** 秒 → 人类可读时长 */
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
+}
+
 interface ProviderItem {
   id: string;
   name: string;
@@ -127,6 +134,19 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     models: "",
     apiKey: "",
   });
+  // GUI 诊断信息（关于页）
+  const [diag, setDiag] = useState<{
+    coreVersion?: string;
+    piDist?: string | null;
+    agentDir?: string;
+    nodeVersion?: string;
+    uptimeSeconds?: number;
+    initialized?: boolean;
+    dialogueCount?: number;
+    currentDialogueId?: string | null;
+    dialogues?: { id: string; cwd: string; status: string; session: string | null }[];
+    files?: { auth?: boolean; settings?: boolean; models?: boolean };
+  } | null>(null);
   const models = usePiUiStore((s) => s.models);
 
   const refresh = useCallback(async () => {
@@ -161,6 +181,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       // 自定义 provider（models.json）
       const cp = await piSend({ type: "list_custom_providers" }).catch(() => null);
       if (cp?.success) setCustomProviders(cp.data?.providers ?? []);
+      // 诊断信息
+      const dg = await piSend({ type: "diagnostics" }).catch(() => null);
+      if (dg?.success) setDiag(dg.data ?? null);
       // 拉取 PI 内核版本（关于页/检查更新）
       const v = await piSend({ type: "get_core_version" }).catch(() => null);
       if (v?.success) setCoreVersion(v.data?.version ?? null);
@@ -801,6 +824,64 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <div className="settings__about-row">
                 <span>PI 内核版本</span>
                 <b>{coreVersion ?? "—"}</b>
+              </div>
+              <div className="settings__about-diag">
+                <div className="settings__about-diag-head">
+                  <span>诊断</span>
+                  <button
+                    className="chip chip--sm"
+                    onClick={() => {
+                      void refresh();
+                    }}
+                  >
+                    ⟳ 刷新
+                  </button>
+                </div>
+                <div className="settings__about-row">
+                  <span>sidecar</span>
+                  <b style={{ color: diag?.initialized ? "var(--ok,#3fb27f)" : "var(--danger)" }}>
+                    {diag?.initialized ? "已连接" : "未初始化"}
+                  </b>
+                </div>
+                <div className="settings__about-row">
+                  <span>Node</span>
+                  <b>{diag?.nodeVersion ?? "—"}</b>
+                </div>
+                <div className="settings__about-row">
+                  <span>运行时长</span>
+                  <b>{diag?.uptimeSeconds != null ? fmtDuration(diag.uptimeSeconds) : "—"}</b>
+                </div>
+                <div className="settings__about-row">
+                  <span>活动对话</span>
+                  <b>{diag?.dialogueCount ?? 0}</b>
+                </div>
+                {diag?.dialogues && diag.dialogues.length > 0 && (
+                  <div className="settings__about-list">
+                    {diag.dialogues.map((d) => (
+                      <div key={d.id} className="settings__about-list-item" title={d.session ?? ""}>
+                        <span className={`settings__about-dot settings__about-dot--${d.status ?? "idle"}`} />
+                        <code>{d.id}</code>
+                        <span className="settings__about-list-cwd">{d.cwd}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="settings__about-row">
+                  <span>auth.json / settings.json / models.json</span>
+                  <b>
+                    {diag?.files ? `${diag.files.auth ? "✓" : "✗"} ${diag.files.settings ? "✓" : "✗"} ${diag.files.models ? "✓" : "✗"}` : "—"}
+                  </b>
+                </div>
+                {diag?.agentDir && (
+                  <div className="settings__about-path" title="~/.pi/agent">
+                    配置目录：{diag.agentDir}
+                  </div>
+                )}
+                {diag?.piDist && (
+                  <div className="settings__about-path" title="PI 内核加载路径">
+                    内核：{diag.piDist}
+                  </div>
+                )}
               </div>
               <button
                 className="chip chip--sm"

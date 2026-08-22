@@ -38,14 +38,20 @@ async function resolvePiModule() {
   const require = createRequire(import.meta.url);
   for (const cand of piCandidates()) {
     log(`候选路径: ${cand} exists=${existsSync(cand)}`);
-    if (existsSync(cand)) return import(pathToFileURL(cand).href);
+    if (existsSync(cand)) {
+      resolvedPiDistPath = cand;
+      return import(pathToFileURL(cand).href);
+    }
   }
   try {
     const root = require("child_process").execSync("npm root -g", { encoding: "utf8" }).trim();
     log(`全局 npm root: ${root}`);
     const globalCandidate = path.join(root, "@earendil-works", "pi-coding-agent", "dist", "index.js");
     log(`全局候选: ${globalCandidate} exists=${existsSync(globalCandidate)}`);
-    if (existsSync(globalCandidate)) return import(pathToFileURL(globalCandidate).href);
+    if (existsSync(globalCandidate)) {
+      resolvedPiDistPath = globalCandidate;
+      return import(pathToFileURL(globalCandidate).href);
+    }
   } catch (e) {
     log(`execSync 失败: ${e instanceof Error ? e.message : e}`);
   }
@@ -105,6 +111,7 @@ function forwardEvent(event, dialogueId = currentDialogueId) {
 // ---------------------------------------------------------------------------
 
 let pi = null; // PI SDK 模块
+let resolvedPiDistPath = null; // 实际加载的 PI dist（diagnostics 用）
 let initialized = false;
 let currentCwd = null; // 当前项目 cwd（openDialogue 设置，list_sessions 依赖）
 // 对话池：每对话 = 一个独立 AgentSessionRuntime（并行对话的地基）。
@@ -112,6 +119,11 @@ let currentCwd = null; // 当前项目 cwd（openDialogue 设置，list_sessions
 const dialogues = new Map(); // dialogueId -> Dialogue
 let currentDialogueId = null; // 当前激活对话（前端 UI 绑定；旧命令默认操作它）
 let dialogueSeq = 0;
+
+// OAuth / 登录子流程：login 命令等待前端弹窗输入（API key / 手动授权码）
+const pendingAuthPrompts = new Map(); // promptId -> { resolve, reject }
+let authPromptSeq = 0;
+const loginControllers = new Map(); // providerId -> AbortController
 
 // ---------------------------------------------------------------------------
 // 3) 会话事件订阅（runtime 更换 session 后必须重新订阅 —— 官方约定）
@@ -493,6 +505,93 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "login": {
+        // 订阅登录（OAuth）/ API key 登录：走 ModelRuntime.login，
+        // 浏览器授权需要前端参与——notify 转发 auth_url/device_code 事件，
+        // prompt 转发为 auth_prompt 事件，前端弹窗后回 auth_input。
+        const pid = cmd.providerId;
+        const method = cmd.method ?? (cmd.apiKey ? "api_key" : "oauth");
+        if (!pid) {
+          sendResponse(requestId, "login", false, undefined, "缺少 providerId");
+          break;
+        }
+        const dlg = getDialogue(cmd.dialogueId);
+        const session = dlg?.runtime.session ?? null;
+        const mr = session?.services?.modelRuntime ?? dlg?.runtime?.services?.modelRuntime ?? null;
+        if (!mr || typeof mr.login !== "function") {
+          sendResponse(requestId, "login", false, undefined, "modelRuntime 不可用");
+          break;
+        }
+        const controller = new AbortController();
+        loginControllers.set(pid, controller);
+        try {
+          const credential = await mr.login(pid, method, {
+            signal: controller.signal,
+            prompt: async (p) => {
+              const promptId = `ap-${Date.now().toString(36)}-${++authPromptSeq}`;
+              send({ type: "auth_prompt", promptId, providerId: pid, prompt: p ?? {} });
+              return new Promise((resolve, reject) => {
+                pendingAuthPrompts.set(promptId, { resolve, reject, providerId: pid });
+                controller.signal.addEventListener(
+                  "abort",
+                  () => {
+                    pendingAuthPrompts.delete(promptId);
+                    reject(new Error("Login cancelled"));
+                  },
+                  { once: true },
+                );
+              });
+            },
+            notify: (event) => {
+              send({ type: "auth_event", providerId: pid, event: event ?? {} });
+            },
+          });
+          loginControllers.delete(pid);
+          // 成功后通知前端并返回当前认证状态
+          send({ type: "auth_event", providerId: pid, event: { type: "success" } });
+          sendResponse(requestId, "login", true, {
+            providerId: pid,
+            credential: { source: credential?.source ?? null, type: credential?.type ?? null },
+          });
+        } catch (e) {
+          loginControllers.delete(pid);
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes("cancelled") || msg.includes("Cancel")) {
+            sendResponse(requestId, "login", false, undefined, "登录已取消");
+          } else {
+            sendResponse(requestId, "login", false, undefined, `登录失败：${msg}`);
+          }
+        }
+        break;
+      }
+
+      case "auth_input": {
+        // 前端弹窗后的输入回填（API key / 手动授权码 / 取消）
+        const entry = pendingAuthPrompts.get(cmd.promptId);
+        if (!entry) {
+          sendResponse(requestId, "auth_input", false, undefined, "无效的输入会话");
+          break;
+        }
+        pendingAuthPrompts.delete(cmd.promptId);
+        if (cmd.cancel) {
+          entry.reject(new Error("Login cancelled"));
+        } else if (typeof cmd.value === "string") {
+          entry.resolve(cmd.value);
+        } else {
+          entry.reject(new Error("缺少输入值"));
+        }
+        sendResponse(requestId, "auth_input", true);
+        break;
+      }
+
+      case "login_abort": {
+        const c = loginControllers.get(cmd.providerId);
+        if (c) c.abort();
+        loginControllers.delete(cmd.providerId);
+        sendResponse(requestId, "login_abort", true);
+        break;
+      }
+
       case "prompt":
         {
           const dlg = getDialogue(cmd.dialogueId);
@@ -841,6 +940,9 @@ async function handleCommand(cmd) {
             name: p.name,
             authed: !!cred,
             key: typeof cred?.key === "string" ? cred.key : null,
+            // 订阅登录（OAuth）与登录标签：供设置面板渲染「订阅登录」入口
+            isSubscription: p.auth?.oauth?.isSubscription ?? false,
+            loginLabel: p.auth?.oauth?.loginLabel ?? p.auth?.apiKey?.name ?? null,
           };
         });
         sendResponse(requestId, "get_providers", true, { providers: list });
@@ -885,14 +987,100 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "list_custom_providers": {
+        // 自定义 provider（~/.pi/agent/models.json 的 providers 字段）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        let cfg = {};
+        try {
+          cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+        } catch {
+          /* 无 models.json */
+        }
+        const providers = Object.entries(cfg.providers ?? {}).map(([id, v]) => ({
+          id,
+          name: v?.name ?? id,
+          baseUrl: v?.baseUrl ?? null,
+          api: v?.api ?? null,
+          models: Array.isArray(v?.models) ? v.models.map((m) => m?.id ?? m).filter(Boolean) : [],
+        }));
+        sendResponse(requestId, "list_custom_providers", true, { providers });
+        break;
+      }
+
+      case "add_provider": {
+        // 新增/更新自定义 provider：写 ~/.pi/agent/models.json（启动时加载，新会话生效）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        if (!cmd.providerId || !cmd.baseUrl) {
+          sendResponse(requestId, "add_provider", false, undefined, "缺少 providerId 或 baseUrl");
+          break;
+        }
+        try {
+          let cfg = {};
+          try {
+            cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+          } catch {
+            /* 新建 */
+          }
+          cfg.providers = cfg.providers ?? {};
+          cfg.providers[cmd.providerId] = {
+            name: cmd.name ?? cmd.providerId,
+            baseUrl: cmd.baseUrl,
+            api: cmd.api ?? "openai-completions",
+            ...(cmd.apiKey ? { apiKey: cmd.apiKey } : {}),
+            ...(cmd.compat && typeof cmd.compat === "object" ? { compat: cmd.compat } : {}),
+            models: Array.isArray(cmd.models)
+              ? cmd.models.map((m) => (typeof m === "string" ? { id: m } : m))
+              : [],
+          };
+          // 原子写入
+          const tmp = configPath + ".tmp";
+          await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf8");
+          await fs.rename(tmp, configPath);
+          sendResponse(requestId, "add_provider", true, { providerId: cmd.providerId, restart: true });
+        } catch (e) {
+          sendResponse(requestId, "add_provider", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "remove_provider": {
+        // 删除自定义 provider（models.json）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        if (!cmd.providerId) {
+          sendResponse(requestId, "remove_provider", false, undefined, "缺少 providerId");
+          break;
+        }
+        try {
+          let cfg = {};
+          try {
+            cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+          } catch {
+            /* ignore */
+          }
+          if (cfg.providers && cfg.providers[cmd.providerId]) {
+            delete cfg.providers[cmd.providerId];
+            const tmp = configPath + ".tmp";
+            await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf8");
+            await fs.rename(tmp, configPath);
+          }
+          sendResponse(requestId, "remove_provider", true, { providerId: cmd.providerId, restart: true });
+        } catch (e) {
+          sendResponse(requestId, "remove_provider", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "get_core_version": {
         // 返回 PI 内核（捆绑 pi-package）的版本，用于「关于/检查更新」
         try {
           let version = "未知";
           let source = null;
-          const dist = process.env.PI_GUI_PI_DIST;
+          const dist = process.env.PI_GUI_PI_DIST ?? resolvedPiDistPath ?? null;
           if (dist) {
-            const pkg = path.resolve(path.dirname(dist), "package.json");
+            // package.json 在包的根（dist 的上一级）
+            const pkg = path.resolve(path.dirname(dist), "..", "package.json");
             if (existsSync(pkg)) {
               const p = JSON.parse(await fs.readFile(pkg, "utf8"));
               version = p.version || "未知";
@@ -902,6 +1090,62 @@ async function handleCommand(cmd) {
           sendResponse(requestId, "get_core_version", true, { version, source });
         } catch (e) {
           sendResponse(requestId, "get_core_version", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "diagnostics": {
+        // GUI 诊断面板：sidecar / PI 内核 / 关键文件 / 对话池状态
+        try {
+          const agentDir = pi.getAgentDir();
+          const has = (p) => {
+            try {
+              return existsSync(p);
+            } catch {
+              return false;
+            }
+          };
+          let coreVersion = "未知";
+          let piDist = process.env.PI_GUI_PI_DIST ?? resolvedPiDistPath ?? null;
+          const dist = piDist;
+          if (dist) {
+            try {
+              // package.json 在包的根（dist 的上一级）
+              const pkg = path.resolve(path.dirname(dist), "..", "package.json");
+              if (has(pkg)) {
+                const p = JSON.parse(await fs.readFile(pkg, "utf8"));
+                coreVersion = p.version ?? "未知";
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          const dlgArr = [...dialogues.values()];
+          sendResponse(requestId, "diagnostics", true, {
+            coreVersion,
+            piDist: dist,
+            agentDir,
+            nodeVersion: process.version ?? null,
+            platform: process.platform ?? null,
+            uptimeSeconds: Math.floor(process.uptime?.() ?? 0),
+            initialized,
+            dialogueCount: dialogues.size,
+            currentDialogueId,
+            dialogues: dlgArr.map((d) => ({
+              id: d.id,
+              cwd: d.cwd,
+              status: d.status ?? "idle",
+              session: d.sessionPath ?? null,
+            })),
+            files: {
+              auth: has(path.join(agentDir, "auth.json")),
+              settings: has(path.join(agentDir, "settings.json")),
+              models: has(path.join(agentDir, "models.json")),
+            },
+          });
+        } catch (e) {
+          sendResponse(requestId, "diagnostics", false, undefined,
             e instanceof Error ? e.message : String(e));
         }
         break;
@@ -1324,6 +1568,7 @@ const STATEFUL_COMMANDS = new Set([
   "open_dialogue",
   "close_dialogue",
   "activate_dialogue",
+  "login",
   "prompt",
   "steer",
   "follow_up",
@@ -1362,8 +1607,9 @@ rl.on("line", (line) => {
     sendResponse(undefined, "parse", false, undefined, "无法解析 JSON 指令");
     return;
   }
-  if (cmd.type === "abort" || cmd.type === "exit") {
-    // abort 立即执行以打断当前流式输出；exit 直接退出进程
+  if (cmd.type === "abort" || cmd.type === "exit" || cmd.type === "auth_input" || cmd.type === "login_abort") {
+    // 立即执行：abort 打断流式；exit 退出；
+    // auth_input/login_abort 必须绕过队列，否则会被挂起的 login 阻塞（死锁）
     void handleCommand(cmd);
     return;
   }

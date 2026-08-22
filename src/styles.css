@@ -2456,6 +2456,71 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 关于页 · 诊断 */
+.settings__about-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, var(--bg-hover));
+}
+
+.settings__about-diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8571rem;
+  font-weight: 600;
+}
+
+.settings__about-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.settings__about-list-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7143rem;
+  font-family: var(--font-mono, monospace);
+}
+
+.settings__about-list-cwd {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__about-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.6;
+}
+
+.settings__about-dot--flowing {
+  background: var(--accent);
+}
+
+.settings__about-dot--thinking {
+  background: var(--warn, #e6a23c);
+}
+
+.settings__about-path {
+  font-size: 0.6429rem;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
 .settings__keyform-hint {
   font-size: 0.7857rem;
   color: var(--text-dim);

@@ -38,14 +38,20 @@ async function resolvePiModule() {
   const require = createRequire(import.meta.url);
   for (const cand of piCandidates()) {
     log(`候选路径: ${cand} exists=${existsSync(cand)}`);
-    if (existsSync(cand)) return import(pathToFileURL(cand).href);
+    if (existsSync(cand)) {
+      resolvedPiDistPath = cand;
+      return import(pathToFileURL(cand).href);
+    }
   }
   try {
     const root = require("child_process").execSync("npm root -g", { encoding: "utf8" }).trim();
     log(`全局 npm root: ${root}`);
     const globalCandidate = path.join(root, "@earendil-works", "pi-coding-agent", "dist", "index.js");
     log(`全局候选: ${globalCandidate} exists=${existsSync(globalCandidate)}`);
-    if (existsSync(globalCandidate)) return import(pathToFileURL(globalCandidate).href);
+    if (existsSync(globalCandidate)) {
+      resolvedPiDistPath = globalCandidate;
+      return import(pathToFileURL(globalCandidate).href);
+    }
   } catch (e) {
     log(`execSync 失败: ${e instanceof Error ? e.message : e}`);
   }
@@ -105,6 +111,7 @@ function forwardEvent(event, dialogueId = currentDialogueId) {
 // ---------------------------------------------------------------------------
 
 let pi = null; // PI SDK 模块
+let resolvedPiDistPath = null; // 实际加载的 PI dist（diagnostics 用）
 let initialized = false;
 let currentCwd = null; // 当前项目 cwd（openDialogue 设置，list_sessions 依赖）
 // 对话池：每对话 = 一个独立 AgentSessionRuntime（并行对话的地基）。
@@ -1070,9 +1077,10 @@ async function handleCommand(cmd) {
         try {
           let version = "未知";
           let source = null;
-          const dist = process.env.PI_GUI_PI_DIST;
+          const dist = process.env.PI_GUI_PI_DIST ?? resolvedPiDistPath ?? null;
           if (dist) {
-            const pkg = path.resolve(path.dirname(dist), "package.json");
+            // package.json 在包的根（dist 的上一级）
+            const pkg = path.resolve(path.dirname(dist), "..", "package.json");
             if (existsSync(pkg)) {
               const p = JSON.parse(await fs.readFile(pkg, "utf8"));
               version = p.version || "未知";
@@ -1082,6 +1090,62 @@ async function handleCommand(cmd) {
           sendResponse(requestId, "get_core_version", true, { version, source });
         } catch (e) {
           sendResponse(requestId, "get_core_version", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "diagnostics": {
+        // GUI 诊断面板：sidecar / PI 内核 / 关键文件 / 对话池状态
+        try {
+          const agentDir = pi.getAgentDir();
+          const has = (p) => {
+            try {
+              return existsSync(p);
+            } catch {
+              return false;
+            }
+          };
+          let coreVersion = "未知";
+          let piDist = process.env.PI_GUI_PI_DIST ?? resolvedPiDistPath ?? null;
+          const dist = piDist;
+          if (dist) {
+            try {
+              // package.json 在包的根（dist 的上一级）
+              const pkg = path.resolve(path.dirname(dist), "..", "package.json");
+              if (has(pkg)) {
+                const p = JSON.parse(await fs.readFile(pkg, "utf8"));
+                coreVersion = p.version ?? "未知";
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          const dlgArr = [...dialogues.values()];
+          sendResponse(requestId, "diagnostics", true, {
+            coreVersion,
+            piDist: dist,
+            agentDir,
+            nodeVersion: process.version ?? null,
+            platform: process.platform ?? null,
+            uptimeSeconds: Math.floor(process.uptime?.() ?? 0),
+            initialized,
+            dialogueCount: dialogues.size,
+            currentDialogueId,
+            dialogues: dlgArr.map((d) => ({
+              id: d.id,
+              cwd: d.cwd,
+              status: d.status ?? "idle",
+              session: d.sessionPath ?? null,
+            })),
+            files: {
+              auth: has(path.join(agentDir, "auth.json")),
+              settings: has(path.join(agentDir, "settings.json")),
+              models: has(path.join(agentDir, "models.json")),
+            },
+          });
+        } catch (e) {
+          sendResponse(requestId, "diagnostics", false, undefined,
             e instanceof Error ? e.message : String(e));
         }
         break;
