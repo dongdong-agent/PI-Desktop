@@ -56,14 +56,13 @@ pub fn run() {
                             show_main(app);
                             return;
                         }
+                        // 应用内快捷键（仅窗口聚焦时生效，经 focus 注册管理）
+                        Code::KeyK if shortcut.mods.contains(Modifiers::CONTROL) => "focus-input",
+                        Code::KeyN if shortcut.mods.contains(Modifiers::CONTROL) => "new-session",
+                        Code::KeyF if shortcut.mods.contains(Modifiers::CONTROL) => "focus-search",
                         _ => return,
                     };
-                    // 仅当主窗口聚焦时响应（后台时忽略，避免误缩放）
-                    if let Some(w) = app.get_webview_window("main") {
-                        if w.is_focused().unwrap_or(false) {
-                            let _ = app.emit("pi:zoom-shortcut", action);
-                        }
-                    }
+                    let _ = app.emit("pi:hotkey", action);
                 })
                 .build(),
         )
@@ -115,6 +114,9 @@ pub fn run() {
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Equal), // Ctrl+Shift+=
                 Shortcut::new(Some(Modifiers::CONTROL), Code::Minus),                 // Ctrl+-
                 Shortcut::new(Some(Modifiers::CONTROL), Code::Digit0),                // Ctrl+0
+                Shortcut::new(Some(Modifiers::CONTROL), Code::KeyK),                  // Ctrl+K 聚焦输入
+                Shortcut::new(Some(Modifiers::CONTROL), Code::KeyN),                  // Ctrl+N 新建会话
+                Shortcut::new(Some(Modifiers::CONTROL), Code::KeyF),                  // Ctrl+F 聚焦搜索
             ];
             if let Some(window) = handle.get_webview_window("main") {
                 // 初始注册（窗口创建后通常处于聚焦状态；后续由 Focused 事件管理）

@@ -337,6 +337,9 @@ export function PiChatView() {
       void reload();
     };
     window.addEventListener("pi:session-changed", onSessionChanged);
+    // 全局快捷键 Ctrl+K：聚焦输入框
+    const onFocusInput = () => inputRef.current?.focus();
+    window.addEventListener("pi:focus-input", onFocusInput);
     const onInsertText = (e: Event) => {
       const text = (e as CustomEvent<string>).detail;
       if (text) {
@@ -358,6 +361,7 @@ export function PiChatView() {
       flushTimerRef.current = 0;
       eventQueueRef.current = [];
       window.removeEventListener("pi:session-changed", onSessionChanged);
+      window.removeEventListener("pi:focus-input", onFocusInput);
       window.removeEventListener("pi:insert-text", onInsertText);
       window.removeEventListener("pi:resend", onResend);
     };

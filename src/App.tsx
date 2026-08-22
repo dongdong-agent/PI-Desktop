@@ -21,11 +21,14 @@ function useZoomShortcut(): void {
     void (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        unlisten = await listen<string>("pi:zoom-shortcut", (e) => {
+        unlisten = await listen<string>("pi:hotkey", (e) => {
           const a = e.payload;
           if (a === "zoom-in") zoomIn();
           else if (a === "zoom-out") zoomOut();
           else if (a === "zoom-reset") zoomReset();
+          else if (a === "focus-input") window.dispatchEvent(new Event("pi:focus-input"));
+          else if (a === "new-session") window.dispatchEvent(new Event("pi:new-session"));
+          else if (a === "focus-search") window.dispatchEvent(new Event("pi:focus-search"));
         });
         if (disposed) unlisten();
       } catch {

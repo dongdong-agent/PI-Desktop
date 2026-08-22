@@ -236,6 +236,7 @@ export function Sidebar() {
   >([]);
   const [searching, setSearching] = useState(false);
   const searchTimerRef = useRef(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const runSearch = useCallback((q: string) => {
     window.clearTimeout(searchTimerRef.current);
     if (!q.trim()) {
@@ -417,10 +418,20 @@ export function Sidebar() {
     });
     refreshDlg();
     const iv = window.setInterval(refreshDlg, 15000); // 兜底轮询（最后活动时间刷新）
+    // 全局快捷键：Ctrl+N 新建会话 / Ctrl+F 聚焦搜索
+    const onNewSession = () => newSessionRef.current?.();
+    const onFocusSearch = () => {
+      setSearchOpen(true);
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener("pi:new-session", onNewSession);
+    window.addEventListener("pi:focus-search", onFocusSearch);
     return () => {
       disposed = true;
       if (timer) window.clearTimeout(timer);
       window.clearInterval(iv);
+      window.removeEventListener("pi:new-session", onNewSession);
+      window.removeEventListener("pi:focus-search", onFocusSearch);
     };
   }, []);
 
@@ -432,6 +443,9 @@ export function Sidebar() {
       }
     });
   }, [refresh]);
+  // 供全局快捷键（Ctrl+N）稳定引用
+  const newSessionRef = useRef(newSession);
+  newSessionRef.current = newSession;
 
   const addProject = useCallback(
     async (p: string) => {
@@ -660,6 +674,7 @@ export function Sidebar() {
       <div className="sidebar__search">
         <div className="sidebar__search-row">
           <input
+            ref={searchInputRef}
             className="sidebar__search-input"
             placeholder="🔍 搜索对话内容…"
             value={searchQuery}
