@@ -252,6 +252,49 @@ export function PiChatView() {
       /* ignore */
     }
   }, []);
+  // 分享当前对话为 GitHub gist（弹 token 输入 + 公开/私密）
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareToken, setShareToken] = useState(() => {
+    try {
+      return localStorage.getItem("aiwb:gh-token") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [sharePublic, setSharePublic] = useState(true);
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const shareGist = useCallback(async () => {
+    const token = shareToken.trim();
+    if (!token) return;
+    setSharing(true);
+    setShareUrl(null);
+    try {
+      const md = await piSend({ type: "export_session", format: "markdown" });
+      if (!md?.success || !md.data?.content) return;
+      const proj = projectShortName(usePiUiStore.getState().currentCwd ?? "未命名");
+      const res = await piSend({
+        type: "create_gist",
+        content: md.data.content,
+        filename: `${proj}-对话记录-${new Date().toISOString().slice(0, 10)}.md`,
+        description: `PI Agent 对话记录 · ${proj}`,
+        token,
+        isPublic: sharePublic,
+      });
+      if (res?.success) {
+        setShareUrl(res.data?.html_url ?? null);
+        try {
+          localStorage.setItem("aiwb:gh-token", token);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        setUi((prev) => markLastError(prev, `分享失败：${res?.error ?? "未知"}`));
+      }
+    } finally {
+      setSharing(false);
+    }
+  }, [shareToken, sharePublic]);
   // 智能贴底：用户主动上滚时暂停自动跟随，滚回底部恢复
   const pinnedRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -761,6 +804,7 @@ export function PiChatView() {
             onTree={() => setTreeOpen(true)}
             onSave={(f) => void saveNow(f)}
             onImport={() => void importSession()}
+            onShare={() => setShareOpen(true)}
             autoSave={autoSave}
             onToggleAutoSave={toggleAutoSave}
             lastSavedAt={lastSavedAt}
@@ -771,6 +815,63 @@ export function PiChatView() {
       </div>
 
       <TreePanel open={treeOpen} onClose={() => setTreeOpen(false)} />
+
+      {/* 分享对话框（GitHub gist） */}
+      {shareOpen && (
+        <div className="settings-overlay" onClick={() => setShareOpen(false)}>
+          <div className="settings share-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="settings__head">
+              <span className="settings__title">🌐 分享当前对话为 Gist</span>
+              <button className="settings__close" onClick={() => setShareOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="settings__main">
+              <div className="settings__body">
+                {shareUrl ? (
+                  <div className="share-dialog__done">
+                    <p>已发布{sharePublic ? "（公开）" : "（私密）"}，链接：</p>
+                    <code className="share-dialog__url" onClick={() => void navigator.clipboard.writeText(shareUrl ?? "")} title="点击复制">
+                      {shareUrl}
+                    </code>
+                    <button
+                      className="btn btn--primary"
+                      onClick={() => void navigator.clipboard.writeText(shareUrl ?? "")}
+                    >
+                      复制链接
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="share-dialog__hint">
+                      需要 GitHub Token（settings → Developer settings → Personal access tokens，勾选 gist 权限）。
+                      Token 仅保存在本机（aiwb:gh-token）。
+                    </div>
+                    <input
+                      type="password"
+                      className="settings__keyinput"
+                      placeholder="GitHub Personal Access Token（ghp_…）"
+                      value={shareToken}
+                      onChange={(e) => setShareToken(e.target.value)}
+                    />
+                    <label className="share-dialog__opt">
+                      <input type="checkbox" checked={sharePublic} onChange={(e) => setSharePublic(e.target.checked)} />
+                      公开（所有人可见）；取消勾选 = 私密 gist
+                    </label>
+                    <button
+                      className="btn btn--primary"
+                      onClick={() => void shareGist()}
+                      disabled={sharing || !shareToken.trim()}
+                    >
+                      {sharing ? "发布中…" : "发布为 Gist"}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {appMenu && (
         <div className="app-ctx" style={{ left: appMenu.x, top: appMenu.y }} onMouseDown={(e) => e.stopPropagation()}>
           <button
@@ -1102,6 +1203,7 @@ const ToolBar = memo(function ToolBar({
   onTree,
   onSave,
   onImport,
+  onShare,
   autoSave,
   onToggleAutoSave,
   lastSavedAt,
@@ -1109,6 +1211,7 @@ const ToolBar = memo(function ToolBar({
   onTree: () => void;
   onSave: (format: "markdown" | "jsonl" | "html" | "txt") => void;
   onImport: () => void;
+  onShare: () => void;
   autoSave: boolean;
   onToggleAutoSave: () => void;
   lastSavedAt: number | null;
@@ -1317,6 +1420,9 @@ const ToolBar = memo(function ToolBar({
       </button>
       <button className="chip chip--sm" onClick={onImport} title="导入 PI 会话文件（jsonl），继续对话">
         📥 导入
+      </button>
+      <button className="chip chip--sm" onClick={onShare} title="把当前对话分享为 GitHub gist 链接">
+        🌐 分享
       </button>
       <button
         className={`chip chip--sm${autoSave ? " chip--active" : ""}`}

@@ -1514,6 +1514,52 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "create_gist": {
+        // 对话分享：把 markdown 上传为 GitHub gist（公开/私密），返回可分享链接
+        const { content, filename, description, token, isPublic } = cmd;
+        if (!content || typeof content !== "string" || !content.trim()) {
+          sendResponse(requestId, "create_gist", false, undefined, "缺少内容");
+          break;
+        }
+        if (!token || typeof token !== "string") {
+          sendResponse(requestId, "create_gist", false, undefined, "需要 GitHub Token（需 gist 权限）");
+          break;
+        }
+        try {
+          const name = (filename ?? "dialogue.md").replace(/[\\/:*?"<>|]/g, "-");
+          const res = await fetch("https://api.github.com/gists", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "User-Agent": "PI-Desktop",
+              Accept: "application/vnd.github+json",
+            },
+            body: JSON.stringify({
+              description: typeof description === "string" ? description : "PI Agent 对话分享",
+              public: !!isPublic,
+              files: { [name]: { content } },
+            }),
+            signal: AbortSignal.timeout(30000),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            sendResponse(requestId, "create_gist", false, undefined,
+              `GitHub 返回 ${res.status}：${j?.message ?? res.statusText}`);
+            break;
+          }
+          sendResponse(requestId, "create_gist", true, {
+            html_url: j.html_url ?? null,
+            id: j.id ?? null,
+            public: j.public ?? !!isPublic,
+          });
+        } catch (e) {
+          sendResponse(requestId, "create_gist", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "search_sessions": {
         // 全局搜索：扫 ~/.pi/agent/sessions 的 jsonl 内容，返回命中会话与上下文片段
         const query = (cmd.query ?? "").trim();

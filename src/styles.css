@@ -967,6 +967,43 @@ body {
   font-size: 0.7857rem;
 }
 
+/* 分享对话框（gist） */
+.share-dialog {
+  width: min(460px, 92vw);
+}
+
+.share-dialog__hint {
+  font-size: 0.7143rem;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.share-dialog__opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7857rem;
+  color: var(--text-dim);
+  margin: 6px 0 10px;
+}
+
+.share-dialog__done {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.share-dialog__url {
+  font-size: 0.7857rem;
+  word-break: break-all;
+  background: var(--bg-subtle, var(--bg-hover));
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
 .msg:hover .msg-ops,
 .msg-ops:focus-within {
   opacity: 1;
