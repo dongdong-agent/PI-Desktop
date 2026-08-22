@@ -1252,11 +1252,12 @@ async function handleCommand(cmd) {
       }
 
       case "session_stats_history": {
-        // 用量统计：按天聚合会话消息数 / token / 花费（扫描各项目最近若干会话）
+        // 用量统计：按天聚合会话消息数 / token / 花费（各项目最近若干会话）；附带按模型拆分
         const days = Math.min(Math.max(Number(cmd.days ?? 14), 1), 90);
         const agentDir = pi.getAgentDir();
         const sessionsDir = path.join(agentDir, "sessions");
         const byDay = new Map();
+        const byModel = new Map();
         try {
           const dirs = await fs.readdir(sessionsDir, { withFileTypes: true });
           for (const entry of dirs) {
@@ -1285,13 +1286,22 @@ async function handleCommand(cmd) {
                   const m = e?.message;
                   if (m?.role !== "assistant" || !m?.usage) continue;
                   const day = (e?.timestamp ?? "").slice(0, 10);
-                  if (!day) continue;
-                  const bucket = byDay.get(day) ?? { day, messages: 0, tokens: 0, cost: 0 };
-                  bucket.messages++;
-                  bucket.tokens += m.usage.totalTokens ?? 0;
                   const c = m.usage.cost;
-                  bucket.cost += typeof c === "number" ? c : c?.total ?? 0;
-                  byDay.set(day, bucket);
+                  const cost = typeof c === "number" ? c : c?.total ?? 0;
+                  const tokens = m.usage.totalTokens ?? 0;
+                  if (day) {
+                    const bucket = byDay.get(day) ?? { day, messages: 0, tokens: 0, cost: 0 };
+                    bucket.messages++;
+                    bucket.tokens += tokens;
+                    bucket.cost += cost;
+                    byDay.set(day, bucket);
+                  }
+                  const model = m.api?.model ?? m.model ?? "未知";
+                  const mb = byModel.get(model) ?? { model, messages: 0, tokens: 0, cost: 0 };
+                  mb.messages++;
+                  mb.tokens += tokens;
+                  mb.cost += cost;
+                  byModel.set(model, mb);
                 }
               } catch {
                 /* 单文件跳过 */
@@ -1309,7 +1319,11 @@ async function handleCommand(cmd) {
           (acc, d) => ({ messages: acc.messages + d.messages, tokens: acc.tokens + d.tokens, cost: acc.cost + d.cost }),
           { messages: 0, tokens: 0, cost: 0 },
         );
-        sendResponse(requestId, "session_stats_history", true, { days: list, totals });
+        // 按模型拆分（Top 10，按 token 排序）
+        const byModelList = [...byModel.values()]
+          .sort((a, b) => b.tokens - a.tokens)
+          .slice(0, 10);
+        sendResponse(requestId, "session_stats_history", true, { days: list, totals, byModel: byModelList });
         break;
       }
 
