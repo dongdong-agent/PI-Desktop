@@ -3,6 +3,7 @@
  * 它不生成任何 AI 内容 —— 所有消息/工具/思考都来自真实 PI 会话事件流。
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
 import { bindPiEvents, piSend } from "../pi/bridge";
 import { projectShortName, usePiUiStore } from "../pi/piUiStore";
@@ -634,6 +635,7 @@ export function PiChatView() {
               <div className="pi-list">
                 <MessageWindow
                   messages={ui.messages}
+                  scrollRef={scrollRef}
                 />
                 {ui.busy && <div className="pi-busy">PI 正在处理…</div>}
               </div>
@@ -803,54 +805,62 @@ export function PiChatView() {
 }
 
 /** 消息卡片 memo：流式更新时只有最后一条消息的引用变化，其余消息直接跳过渲染 */
-const INITIAL_RENDER = 200; // 长会话默认只渲染最近 N 条，防上万 DOM 卡顿
-const EXPAND_STEP = 200; // 每次「展开更早」加载条数
 
 /**
- * 长会话窗口化渲染：默认渲染尾部 INITIAL_RENDER 条，更早起折叠为
- * 「⬆ 显示更早 N 条」按钮，点击渐进展开（按 EXPAND_STEP 递增向前）。
+ * 长会话无缝滚动：react-virtual 虚拟化——DOM 只渲染可见区 (+overscan)，
+ * 万条消息也能直接滚到底，无需「加载更多」；消息高度动态测量（measureElement）。
  */
-function MessageWindow({ messages }: { messages: PiViewMessage[] }) {
+function MessageWindow({ messages, scrollRef }: { messages: PiViewMessage[]; scrollRef: { current: HTMLDivElement | null } }) {
   const total = messages.length;
+  const virtualizer = useVirtualizer({
+    count: total,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (i) => (messages[i]?.role === "user" ? 56 : 88),
+    overscan: 8,
+    getItemKey: (i) => messages[i]?.id ?? i,
+  });
+  const items = virtualizer.getVirtualItems();
 
-  // 会话切换/清空时重置展开；避免对新增消息误判（窗口按尾部向前，天然含最新）
-  const [expandCount, setExpandCount] = useState(0);
-  useEffect(() => {
-    setExpandCount(0);
-  }, [total]);
-
-  // 会话重置（切会话时 messages 先清空）——total 变 0 时也重置
-  const shown = useMemo(() => {
-    if (total <= INITIAL_RENDER) return messages;
-    const start = Math.max(0, total - INITIAL_RENDER * (1 + expandCount));
-    return messages.slice(start);
-  }, [messages, total, expandCount]);
-  const hiddenBefore = total > INITIAL_RENDER ? Math.max(0, total - INITIAL_RENDER * (1 + expandCount)) : 0;
-
-  const loadMore = useCallback(() => setExpandCount((c) => c + 1), []);
+  // 找该条之前最近的用户文本（AI 消息「重新生成」时用）：只在可见项范围内向前扫（性能）
+  const visibleStart = items.length ? items[0].index : 0;
+  const prevUserCache = useMemo(() => {
+    const map = new Map<number, string>();
+    let lastUser = "";
+    for (let i = 0; i <= visibleStart + messages.length; i++) {
+      const m = messages[i];
+      if (!m) break;
+      if (m.role === "user") {
+        const tb = m.blocks.find((b) => b.kind === "text");
+        lastUser = tb?.text ?? "";
+      }
+      if (i >= visibleStart) map.set(i, lastUser);
+    }
+    return map;
+  }, [messages, visibleStart]);
 
   return (
-    <>
-      {hiddenBefore > 0 && (
-        <button className="chat__load-more" onClick={loadMore} title={`已折叠 ${hiddenBefore} 条更早消息`}>
-          ⬆ 显示更早 {Math.min(EXPAND_STEP, hiddenBefore)} 条（共 {hiddenBefore} 条更早）
-        </button>
-      )}
-      {shown.map((m, i) => {
-        // 找到该条之前最近的用户文本（AI 消息「重新生成」时用）
-        let prevUser = "";
-        for (let j = i - 1; j >= 0; j--) {
-          if (shown[j].role === "user") {
-            const tb = shown[j].blocks.find((b) => b.kind === "text");
-            if (tb) {
-              prevUser = tb.text;
-              break;
-            }
-          }
-        }
-        return <MessageCard key={m.id} msg={m} prevUserText={prevUser} />;
+    <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+      {items.map((vi) => {
+        const m = messages[vi.index];
+        if (!m) return null;
+        return (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${vi.start}px)`,
+            }}
+          >
+            <MessageCard msg={m} prevUserText={prevUserCache.get(vi.index) ?? ""} />
+          </div>
+        );
       })}
-    </>
+    </div>
   );
 }
 
