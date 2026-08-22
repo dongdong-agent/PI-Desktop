@@ -4,8 +4,34 @@ mod pi_bridge;
 mod window_cmd;
 
 use pi_bridge::PiBridge;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+/// 显示/切换主窗口（托盘点击 / 全局呼出）
+fn toggle_main(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    if w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) {
+        let _ = w.hide();
+    } else {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// 显式呼出（全局快捷键：无论窗口是否可见都显示并聚焦）
+fn show_main(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,6 +48,14 @@ pub fn run() {
                         Code::Equal => "zoom-in",
                         Code::Minus => "zoom-out",
                         Code::Digit0 => "zoom-reset",
+                        // 全局呼出：Ctrl+Alt+P（始终生效）
+                        Code::KeyP
+                            if shortcut.mods.contains(Modifiers::CONTROL)
+                                && shortcut.mods.contains(Modifiers::ALT) =>
+                        {
+                            show_main(app);
+                            return;
+                        }
                         _ => return,
                     };
                     // 仅当主窗口聚焦时响应（后台时忽略，避免误缩放）
@@ -34,6 +68,40 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // 系统托盘：左键单击显示/隐藏，菜单含显示/退出
+            if let Ok(show_item) = MenuItem::with_id(app.handle(), "show", "显示 / 隐藏", true, None::<&str>) {
+                if let Ok(quit_item) = MenuItem::with_id(app.handle(), "quit", "退出", true, None::<&str>) {
+                    if let Ok(menu) = Menu::with_items(app.handle(), &[&show_item, &quit_item]) {
+                        let _ = TrayIconBuilder::with_id("main-tray")
+                            .icon(app.default_window_icon().unwrap().clone())
+                            .tooltip("PI Agent")
+                            .menu(&menu)
+                            .show_menu_on_left_click(false)
+                            .on_menu_event(|app, event| match event.id.as_ref() {
+                                "show" => show_main(app),
+                                "quit" => app.exit(0),
+                                _ => {}
+                            })
+                            .on_tray_icon_event(|tray, event| {
+                                if let TrayIconEvent::Click {
+                                    button: MouseButton::Left,
+                                    button_state: MouseButtonState::Up,
+                                    ..
+                                } = event
+                                {
+                                    toggle_main(tray.app_handle());
+                                }
+                            })
+                            .build(app.handle());
+                    }
+                }
+            }
+
+            // 全局呼出快捷键（Ctrl+Alt+P）——常驻注册，后台也能唤出
+            let _ = app.handle().global_shortcut().register(
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyP),
+            );
+
             let bridge = PiBridge::spawn(app.handle())
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             app.manage(bridge);
