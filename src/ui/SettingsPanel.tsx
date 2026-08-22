@@ -114,6 +114,19 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   } | null>(null);
   const [loginInput, setLoginInput] = useState("");
   const loginInputRef = useRef<HTMLInputElement>(null);
+  // 自定义 provider（~/.pi/agent/models.json）表单
+  const [customProviders, setCustomProviders] = useState<
+    { id: string; name: string; baseUrl: string; api: string; models: string[] }[]
+  >([]);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [cpForm, setCpForm] = useState({
+    id: "",
+    name: "",
+    baseUrl: "",
+    api: "openai-completions",
+    models: "",
+    apiKey: "",
+  });
   const models = usePiUiStore((s) => s.models);
 
   const refresh = useCallback(async () => {
@@ -145,6 +158,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
       if (s?.success) setSettings(s.data ?? {});
       if (c?.success) setExtensions(c.data?.extensions ?? []);
+      // 自定义 provider（models.json）
+      const cp = await piSend({ type: "list_custom_providers" }).catch(() => null);
+      if (cp?.success) setCustomProviders(cp.data?.providers ?? []);
       // 拉取 PI 内核版本（关于页/检查更新）
       const v = await piSend({ type: "get_core_version" }).catch(() => null);
       if (v?.success) setCoreVersion(v.data?.version ?? null);
@@ -318,6 +334,50 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
     } finally {
       setSavingKey(false);
+    }
+  };
+
+  // 保存自定义 provider（写 models.json，重启生效）
+  const saveCustomProvider = async () => {
+    const id = cpForm.id.trim();
+    const baseUrl = cpForm.baseUrl.trim();
+    if (!id || !baseUrl) {
+      setSavedMsg("自定义 Provider 需填写 Provider ID 和 Base URL");
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+      setSavedMsg("Provider ID 只能是小写字母/数字/连字符（如 openai-compatible-cn）");
+      return;
+    }
+    const models = cpForm.models
+      .split(/[,\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => ({ id: s }));
+    const res = await piSend({
+      type: "add_provider",
+      providerId: id,
+      name: cpForm.name.trim() || id,
+      baseUrl,
+      api: cpForm.api,
+      apiKey: cpForm.apiKey.trim() || undefined,
+      models,
+    });
+    if (res?.success) {
+      setSavedMsg(`已保存自定义 Provider「${id}」——重启应用后生效`);
+      setCpForm({ id: "", name: "", baseUrl: "", api: "openai-completions", models: "", apiKey: "" });
+      void refresh();
+    } else {
+      setSavedMsg(`保存失败：${res?.error ?? ""}`);
+    }
+  };
+  const removeCustomProvider = async (id: string) => {
+    const res = await piSend({ type: "remove_provider", providerId: id });
+    if (res?.success) {
+      setSavedMsg(`已删除自定义 Provider「${id}」——重启应用后完全移除`);
+      void refresh();
+    } else {
+      setSavedMsg(`删除失败：${res?.error ?? ""}`);
     }
   };
 
@@ -539,6 +599,100 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
               )}
+
+              {/* 自定义 Provider（models.json）：本地模型/Ollama/网关/兼容端点 */}
+              <div className="settings__custom">
+                <div className="settings__custom-head">
+                  <button
+                    className="sidebar__toggle sidebar__toggle--row"
+                    onClick={() => setCustomOpen((v) => !v)}
+                  >
+                    <span className="sidebar__toggle-arrow">{customOpen ? "▾" : "▸"}</span>
+                    <span className="sidebar__toggle-label">
+                      自定义 Provider{customProviders.length > 0 ? `（${customProviders.length}）` : ""}
+                    </span>
+                  </button>
+                </div>
+                {customOpen && (
+                  <div className="settings__custom-body">
+                    <div className="settings__custom-hint">
+                      Ollama / LM Studio / vLLM / 代理网关等 OpenAI 兼容端点，写入
+                      ~/.pi/agent/models.json（重启应用生效）。
+                    </div>
+                    <div className="settings__custom-form">
+                      <div className="settings__custom-row">
+                        <input
+                          className="settings__keyinput"
+                          placeholder="Provider ID（如 ollama-cn）"
+                          value={cpForm.id}
+                          onChange={(e) => setCpForm((f) => ({ ...f, id: e.target.value }))}
+                        />
+                        <input
+                          className="settings__keyinput"
+                          placeholder="显示名称（可选）"
+                          value={cpForm.name}
+                          onChange={(e) => setCpForm((f) => ({ ...f, name: e.target.value }))}
+                        />
+                      </div>
+                      <input
+                        className="settings__keyinput"
+                        placeholder="Base URL（如 http://localhost:11434/v1）"
+                        value={cpForm.baseUrl}
+                        onChange={(e) => setCpForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                      />
+                      <div className="settings__custom-row">
+                        <select
+                          className="settings__keyinput"
+                          value={cpForm.api}
+                          onChange={(e) => setCpForm((f) => ({ ...f, api: e.target.value }))}
+                        >
+                          <option value="openai-completions">openai-completions</option>
+                          <option value="openai-responses">openai-responses</option>
+                          <option value="anthropic-messages">anthropic-messages</option>
+                        </select>
+                        <input
+                          className="settings__keyinput"
+                          placeholder="API Key（可选，如 ollama 可填 ollama）"
+                          type="password"
+                          value={cpForm.apiKey}
+                          onChange={(e) => setCpForm((f) => ({ ...f, apiKey: e.target.value }))}
+                        />
+                      </div>
+                      <input
+                        className="settings__keyinput"
+                        placeholder="模型 ID，逗号分隔（如 qwen2.5:7b,llama3:8b）"
+                        value={cpForm.models}
+                        onChange={(e) => setCpForm((f) => ({ ...f, models: e.target.value }))}
+                      />
+                      <button className="btn btn--primary" onClick={() => void saveCustomProvider()}>
+                        保存自定义 Provider
+                      </button>
+                    </div>
+                    {customProviders.length > 0 && (
+                      <ul className="settings__custom-list">
+                        {customProviders.map((cp) => (
+                          <li key={cp.id} className="settings__custom-item">
+                            <div className="settings__custom-item-main">
+                              <span className="settings__custom-item-name">{cp.name}</span>
+                              <code className="settings__custom-item-id">{cp.id}</code>
+                              <span className="settings__custom-item-meta">
+                                {cp.baseUrl} · {cp.api} · {cp.models.length} 模型
+                              </span>
+                            </div>
+                            <button
+                              className="chip chip--sm settings__candidate-del"
+                              onClick={() => void removeCustomProvider(cp.id)}
+                              title="从 models.json 删除"
+                            >
+                              ✕
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

@@ -980,6 +980,91 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "list_custom_providers": {
+        // 自定义 provider（~/.pi/agent/models.json 的 providers 字段）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        let cfg = {};
+        try {
+          cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+        } catch {
+          /* 无 models.json */
+        }
+        const providers = Object.entries(cfg.providers ?? {}).map(([id, v]) => ({
+          id,
+          name: v?.name ?? id,
+          baseUrl: v?.baseUrl ?? null,
+          api: v?.api ?? null,
+          models: Array.isArray(v?.models) ? v.models.map((m) => m?.id ?? m).filter(Boolean) : [],
+        }));
+        sendResponse(requestId, "list_custom_providers", true, { providers });
+        break;
+      }
+
+      case "add_provider": {
+        // 新增/更新自定义 provider：写 ~/.pi/agent/models.json（启动时加载，新会话生效）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        if (!cmd.providerId || !cmd.baseUrl) {
+          sendResponse(requestId, "add_provider", false, undefined, "缺少 providerId 或 baseUrl");
+          break;
+        }
+        try {
+          let cfg = {};
+          try {
+            cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+          } catch {
+            /* 新建 */
+          }
+          cfg.providers = cfg.providers ?? {};
+          cfg.providers[cmd.providerId] = {
+            name: cmd.name ?? cmd.providerId,
+            baseUrl: cmd.baseUrl,
+            api: cmd.api ?? "openai-completions",
+            ...(cmd.apiKey ? { apiKey: cmd.apiKey } : {}),
+            ...(cmd.compat && typeof cmd.compat === "object" ? { compat: cmd.compat } : {}),
+            models: Array.isArray(cmd.models)
+              ? cmd.models.map((m) => (typeof m === "string" ? { id: m } : m))
+              : [],
+          };
+          // 原子写入
+          const tmp = configPath + ".tmp";
+          await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf8");
+          await fs.rename(tmp, configPath);
+          sendResponse(requestId, "add_provider", true, { providerId: cmd.providerId, restart: true });
+        } catch (e) {
+          sendResponse(requestId, "add_provider", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "remove_provider": {
+        // 删除自定义 provider（models.json）
+        const configPath = path.join(pi.getAgentDir(), "models.json");
+        if (!cmd.providerId) {
+          sendResponse(requestId, "remove_provider", false, undefined, "缺少 providerId");
+          break;
+        }
+        try {
+          let cfg = {};
+          try {
+            cfg = JSON.parse(await fs.readFile(configPath, "utf8"));
+          } catch {
+            /* ignore */
+          }
+          if (cfg.providers && cfg.providers[cmd.providerId]) {
+            delete cfg.providers[cmd.providerId];
+            const tmp = configPath + ".tmp";
+            await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf8");
+            await fs.rename(tmp, configPath);
+          }
+          sendResponse(requestId, "remove_provider", true, { providerId: cmd.providerId, restart: true });
+        } catch (e) {
+          sendResponse(requestId, "remove_provider", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "get_core_version": {
         // 返回 PI 内核（捆绑 pi-package）的版本，用于「关于/检查更新」
         try {

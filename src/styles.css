@@ -2369,6 +2369,93 @@ body {
   gap: 8px;
 }
 
+/* 自定义 Provider（models.json） */
+.settings__custom {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.settings__custom-head .sidebar__toggle {
+  width: 100%;
+}
+
+.settings__custom-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 4px 4px;
+}
+
+.settings__custom-hint {
+  font-size: 0.7143rem;
+  color: var(--text-dim);
+}
+
+.settings__custom-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, var(--bg-hover));
+}
+
+.settings__custom-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings__custom-row .settings__keyinput {
+  flex: 1;
+}
+
+.settings__custom-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings__custom-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.settings__custom-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings__custom-item-name {
+  font-size: 0.8571rem;
+  font-weight: 500;
+}
+
+.settings__custom-item-id {
+  font-size: 0.7143rem;
+  opacity: 0.7;
+}
+
+.settings__custom-item-meta {
+  font-size: 0.6429rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .settings__keyform-hint {
   font-size: 0.7857rem;
   color: var(--text-dim);
