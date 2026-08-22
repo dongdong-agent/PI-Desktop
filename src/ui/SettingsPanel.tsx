@@ -130,6 +130,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   // 数据管理（备份/清理）
   const [dataBusy, setDataBusy] = useState("");
   const [cleanDays, setCleanDays] = useState("30");
+  // 内核更新检查/下载
+  const [piUpdate, setPiUpdate] = useState<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
+  const [updateBusy, setUpdateBusy] = useState("");
   const [loginInput, setLoginInput] = useState("");
   const loginInputRef = useRef<HTMLInputElement>(null);
   // 自定义 provider（~/.pi/agent/models.json）表单
@@ -300,6 +303,37 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       void refresh();
     } finally {
       setReloading(false);
+    }
+  };
+
+  // 检查 PI 内核更新
+  const checkPiUpdate = async () => {
+    setUpdateBusy("检查中…");
+    setSavedMsg("");
+    try {
+      const res = await piSend({ type: "check_pi_update" });
+      if (res?.success) {
+        setPiUpdate({ current: res.data.current, latest: res.data.latest, updateAvailable: res.data.updateAvailable });
+      } else {
+        setSavedMsg(`检查失败：${res?.error ?? ""}`);
+      }
+    } finally {
+      setUpdateBusy("");
+    }
+  };
+  // 下载新版内核（重启应用生效）
+  const downloadPiUpdate = async () => {
+    setUpdateBusy("下载中…（约 1-3 分钟）");
+    setSavedMsg("");
+    try {
+      const res = await piSend({ type: "download_pi_update" });
+      if (res?.success) {
+        setSavedMsg(`已下载 PI ${res.data.version} 到待安装位置。重启应用后自动替换生效（旧版保留备份）。`);
+      } else {
+        setSavedMsg(`下载失败：${res?.error ?? ""}`);
+      }
+    } finally {
+      setUpdateBusy("");
     }
   };
 
@@ -907,6 +941,37 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <span>PI 内核版本</span>
                 <b>{coreVersion ?? "—"}</b>
               </div>
+              <div className="settings__about-update">
+                <div className="settings__about-update-row">
+                  <button className="chip chip--sm" onClick={() => void checkPiUpdate()} disabled={!!updateBusy}>
+                    {updateBusy || "🔎 检查更新"}
+                  </button>
+                  {piUpdate && (
+                    <span className="settings__about-update-info">
+                      {piUpdate.updateAvailable
+                        ? `最新：${piUpdate.latest}（可升级）`
+                        : `已是最新（${piUpdate.latest ?? "?"}）`}
+                    </span>
+                  )}
+                </div>
+                {piUpdate?.updateAvailable && (
+                  <div className="settings__about-update-row">
+                    <button className="chip chip--sm" onClick={() => void downloadPiUpdate()} disabled={!!updateBusy}>
+                      ⬇ 下载新版内核（重启生效）
+                    </button>
+                  </div>
+                )}
+                <div className="settings__about-hint">
+                  下载后在下次启动应用时自动替换内核（旧版备份 pi-package.bak）。
+                </div>
+              </div>
+              <button
+                className="chip chip--sm"
+                style={{ alignSelf: "center" }}
+                onClick={() => void openExtUrl("https://www.npmjs.com/package/@earendil-works/pi-coding-agent")}
+              >
+                🔎 查看 npm 页面 ↗
+              </button>
               <div className="settings__about-diag">
                 <div className="settings__about-diag-head">
                   <span>诊断</span>
@@ -970,10 +1035,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 style={{ alignSelf: "center" }}
                 onClick={() => void openExtUrl("https://www.npmjs.com/package/@earendil-works/pi-coding-agent")}
               >
-                🔎 查看 PI 内核更新 ↗
+                🔎 查看 npm 页面 ↗
               </button>
               <div className="settings__about-hint">
-                升级内核需重新打包/安装新版安装包；本页可查看最新版本与变更。
+                下载后重启应用自动替换内核（旧版备份 pi-package.bak）。
               </div>
             </div>
           )}

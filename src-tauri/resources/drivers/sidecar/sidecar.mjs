@@ -19,6 +19,34 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
+import zlib from "node:zlib";
+
+/** 简易 tar 解包（gzip 已解压的 buffer，按 512 字节头解析；仅用于 npm tarball 解压） */
+function untar(buf, outDir) {
+  const entries = [];
+  let offset = 0;
+  const readStr = (start, len) => {
+    let end = start + len;
+    while (end > start && buf[end - 1] === 0) end--;
+    return buf.subarray(start, end).toString("utf8");
+  };
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+    if (header.every((b) => b === 0)) break; // 末尾零块
+    const name = readStr(offset, 100);
+    const sizeStr = readStr(offset + 124, 12).trim();
+    const type = String.fromCharCode(header[156] ?? 0);
+    const size = parseInt(sizeStr, 8) || 0;
+    offset += 512;
+    if (!name) break;
+    const data = buf.subarray(offset, offset + size);
+    offset += Math.ceil(size / 512) * 512;
+    if (type === "5") continue; // 目录由 mkdir 隐式创建
+    if (!size) continue;
+    entries.push({ name, data });
+  }
+  return entries;
+}
 
 // ---------------------------------------------------------------------------
 // 0) 解析 PI 包（优先显式路径 → 项目依赖 → 全局安装）
@@ -1090,6 +1118,125 @@ async function handleCommand(cmd) {
           sendResponse(requestId, "get_core_version", true, { version, source });
         } catch (e) {
           sendResponse(requestId, "get_core_version", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "check_pi_update": {
+        // 检查 PI 内核更新：当前捆绑版本 vs npm 最新版
+        try {
+          let current = "未知";
+          const dist = process.env.PI_GUI_PI_DIST ?? resolvedPiDistPath ?? null;
+          if (dist) {
+            try {
+              const pkg = path.resolve(path.dirname(dist), "..", "package.json");
+              if (existsSync(pkg)) {
+                const p = JSON.parse(await fs.readFile(pkg, "utf8"));
+                current = p.version ?? "未知";
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          const res = await fetch("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest", {
+            signal: AbortSignal.timeout(15000),
+          }).catch(() => null);
+          let latest = null;
+          if (res?.ok) {
+            const j = await res.json().catch(() => null);
+            latest = j?.version ?? null;
+          }
+          sendResponse(requestId, "check_pi_update", true, {
+            current,
+            latest,
+            updateAvailable: !!latest && latest !== current && current !== "未知",
+          });
+        } catch (e) {
+          sendResponse(requestId, "check_pi_update", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "download_pi_update": {
+        // 下载最新内核到资源目录 pi-package.new（解压校验，重启应用时由 Rust 替换旧包）
+        const resDir = process.env.PI_GUI_RESOURCE_DIR ?? null;
+        if (!resDir) {
+          sendResponse(requestId, "download_pi_update", false, undefined, "资源目录不可用（开发环境不适用）");
+          break;
+        }
+        try {
+          // 1) 查最新版本
+          const res = await fetch("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest", {
+            signal: AbortSignal.timeout(15000),
+          }).catch(() => null);
+          if (!res?.ok) {
+            sendResponse(requestId, "download_pi_update", false, undefined, "获取最新版本失败（网络？）");
+            break;
+          }
+          const meta = await res.json().catch(() => null);
+          const version = meta?.version ?? null;
+          if (!version) {
+            sendResponse(requestId, "download_pi_update", false, undefined, "无法解析最新版本号");
+            break;
+          }
+          const tarballUrl = meta?.dist?.tarball ?? null;
+          if (!tarballUrl) {
+            sendResponse(requestId, "download_pi_update", false, undefined, "缺少 tarball 地址");
+            break;
+          }
+          // 2) 下载 tarball
+          const tarball = await fetch(tarballUrl, { signal: AbortSignal.timeout(120000) }).catch(() => null);
+          if (!tarball?.ok) {
+            sendResponse(requestId, "download_pi_update", false, undefined, "下载 tarball 失败（网络？）");
+            break;
+          }
+          const gz = Buffer.from(await tarball.arrayBuffer());
+          // 3) gunzip + tar 解包
+          const raw = zlib.gunzipSync(gz);
+          const entries = untar(raw, null);
+          if (entries.length === 0) {
+            sendResponse(requestId, "download_pi_update", false, undefined, "tarball 解析为空");
+            break;
+          }
+          // 4) 解到 pi-package.new（先清旧目录再写）
+          const pkgNew = path.join(resDir, "resources", "pi-package.new");
+          await fs.rm(pkgNew, { recursive: true, force: true });
+          await fs.mkdir(pkgNew, { recursive: true });
+          let wrote = 0;
+          for (const e of entries) {
+            // tarball 顶层带 package/ 前缀，去掉
+            const rel = e.name.replace(/^package\//, "");
+            if (!rel) continue;
+            const fp = path.join(pkgNew, rel);
+            if (!fp.startsWith(pkgNew)) continue; // 防穿越
+            await fs.mkdir(path.dirname(fp), { recursive: true });
+            await fs.writeFile(fp, e.data);
+            wrote++;
+          }
+          // 5) 校验：dist/index.js 存在 + package.json 版本匹配
+          const distJs = path.join(pkgNew, "dist", "index.js");
+          if (!existsSync(distJs)) {
+            await fs.rm(pkgNew, { recursive: true, force: true });
+            sendResponse(requestId, "download_pi_update", false, undefined, "新包缺少 dist/index.js，已回滚");
+            break;
+          }
+          const pkgJson = path.join(pkgNew, "package.json");
+          let pkgVersion = null;
+          try {
+            pkgVersion = JSON.parse(await fs.readFile(pkgJson, "utf8"))?.version ?? null;
+          } catch {
+            /* ignore */
+          }
+          sendResponse(requestId, "download_pi_update", true, {
+            version: pkgVersion ?? version,
+            files: wrote,
+            ready: true,
+            note: "重启应用后自动替换生效（旧包保留 pi-package.bak）",
+          });
+        } catch (e) {
+          sendResponse(requestId, "download_pi_update", false, undefined,
             e instanceof Error ? e.message : String(e));
         }
         break;

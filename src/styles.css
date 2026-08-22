@@ -2595,6 +2595,29 @@ body {
   background: var(--bg-subtle, var(--bg-hover));
 }
 
+/* 内核更新检查/下载 */
+.settings__about-update {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, var(--bg-hover));
+}
+
+.settings__about-update-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings__about-update-info {
+  font-size: 0.7857rem;
+}
+
 .settings__about-diag-head {
   display: flex;
   align-items: center;

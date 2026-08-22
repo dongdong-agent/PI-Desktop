@@ -67,6 +67,42 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // 内核升级：若存在校验过的 pi-package.new（sidecar download_pi_update 产出），
+            // 启动时替换为 pi-package（旧包备份为 pi-package.bak，失败可回滚）
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let mut rd = resource_dir.clone();
+                #[cfg(windows)]
+                {
+                    let s = rd.to_string_lossy().to_string();
+                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                        rd = std::path::PathBuf::from(stripped);
+                    }
+                }
+                let new_dir = rd.join("resources/pi-package.new");
+                let pkg_dir = rd.join("resources/pi-package");
+                let bak_dir = rd.join("resources/pi-package.bak");
+                let new_dist = new_dir.join("dist/index.js");
+                if new_dist.exists() {
+                    let _ = std::fs::remove_dir_all(&bak_dir);
+                    if pkg_dir.exists() {
+                        let _ = std::fs::rename(&pkg_dir, &bak_dir);
+                    }
+                    match std::fs::rename(&new_dir, &pkg_dir) {
+                        Ok(()) => {
+                            let _ = std::fs::remove_dir_all(&bak_dir);
+                            println!("[pi-bridge] PI 内核已升级（pi-package.new → pi-package）");
+                        }
+                        Err(e) => {
+                            // 回滚
+                            if !pkg_dir.exists() && bak_dir.exists() {
+                                let _ = std::fs::rename(&bak_dir, &pkg_dir);
+                            }
+                            println!("[pi-bridge] 内核升级失败并回滚: {e}");
+                        }
+                    }
+                }
+            }
+
             // 系统托盘：左键单击显示/隐藏，菜单含显示/退出
             if let Ok(show_item) = MenuItem::with_id(app.handle(), "show", "显示 / 隐藏", true, None::<&str>) {
                 if let Ok(quit_item) = MenuItem::with_id(app.handle(), "quit", "退出", true, None::<&str>) {
