@@ -113,6 +113,11 @@ const dialogues = new Map(); // dialogueId -> Dialogue
 let currentDialogueId = null; // 当前激活对话（前端 UI 绑定；旧命令默认操作它）
 let dialogueSeq = 0;
 
+// OAuth / 登录子流程：login 命令等待前端弹窗输入（API key / 手动授权码）
+const pendingAuthPrompts = new Map(); // promptId -> { resolve, reject }
+let authPromptSeq = 0;
+const loginControllers = new Map(); // providerId -> AbortController
+
 // ---------------------------------------------------------------------------
 // 3) 会话事件订阅（runtime 更换 session 后必须重新订阅 —— 官方约定）
 // ---------------------------------------------------------------------------
@@ -493,6 +498,93 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "login": {
+        // 订阅登录（OAuth）/ API key 登录：走 ModelRuntime.login，
+        // 浏览器授权需要前端参与——notify 转发 auth_url/device_code 事件，
+        // prompt 转发为 auth_prompt 事件，前端弹窗后回 auth_input。
+        const pid = cmd.providerId;
+        const method = cmd.method ?? (cmd.apiKey ? "api_key" : "oauth");
+        if (!pid) {
+          sendResponse(requestId, "login", false, undefined, "缺少 providerId");
+          break;
+        }
+        const dlg = getDialogue(cmd.dialogueId);
+        const session = dlg?.runtime.session ?? null;
+        const mr = session?.services?.modelRuntime ?? dlg?.runtime?.services?.modelRuntime ?? null;
+        if (!mr || typeof mr.login !== "function") {
+          sendResponse(requestId, "login", false, undefined, "modelRuntime 不可用");
+          break;
+        }
+        const controller = new AbortController();
+        loginControllers.set(pid, controller);
+        try {
+          const credential = await mr.login(pid, method, {
+            signal: controller.signal,
+            prompt: async (p) => {
+              const promptId = `ap-${Date.now().toString(36)}-${++authPromptSeq}`;
+              send({ type: "auth_prompt", promptId, providerId: pid, prompt: p ?? {} });
+              return new Promise((resolve, reject) => {
+                pendingAuthPrompts.set(promptId, { resolve, reject, providerId: pid });
+                controller.signal.addEventListener(
+                  "abort",
+                  () => {
+                    pendingAuthPrompts.delete(promptId);
+                    reject(new Error("Login cancelled"));
+                  },
+                  { once: true },
+                );
+              });
+            },
+            notify: (event) => {
+              send({ type: "auth_event", providerId: pid, event: event ?? {} });
+            },
+          });
+          loginControllers.delete(pid);
+          // 成功后通知前端并返回当前认证状态
+          send({ type: "auth_event", providerId: pid, event: { type: "success" } });
+          sendResponse(requestId, "login", true, {
+            providerId: pid,
+            credential: { source: credential?.source ?? null, type: credential?.type ?? null },
+          });
+        } catch (e) {
+          loginControllers.delete(pid);
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes("cancelled") || msg.includes("Cancel")) {
+            sendResponse(requestId, "login", false, undefined, "登录已取消");
+          } else {
+            sendResponse(requestId, "login", false, undefined, `登录失败：${msg}`);
+          }
+        }
+        break;
+      }
+
+      case "auth_input": {
+        // 前端弹窗后的输入回填（API key / 手动授权码 / 取消）
+        const entry = pendingAuthPrompts.get(cmd.promptId);
+        if (!entry) {
+          sendResponse(requestId, "auth_input", false, undefined, "无效的输入会话");
+          break;
+        }
+        pendingAuthPrompts.delete(cmd.promptId);
+        if (cmd.cancel) {
+          entry.reject(new Error("Login cancelled"));
+        } else if (typeof cmd.value === "string") {
+          entry.resolve(cmd.value);
+        } else {
+          entry.reject(new Error("缺少输入值"));
+        }
+        sendResponse(requestId, "auth_input", true);
+        break;
+      }
+
+      case "login_abort": {
+        const c = loginControllers.get(cmd.providerId);
+        if (c) c.abort();
+        loginControllers.delete(cmd.providerId);
+        sendResponse(requestId, "login_abort", true);
+        break;
+      }
+
       case "prompt":
         {
           const dlg = getDialogue(cmd.dialogueId);
@@ -841,6 +933,9 @@ async function handleCommand(cmd) {
             name: p.name,
             authed: !!cred,
             key: typeof cred?.key === "string" ? cred.key : null,
+            // 订阅登录（OAuth）与登录标签：供设置面板渲染「订阅登录」入口
+            isSubscription: p.auth?.oauth?.isSubscription ?? false,
+            loginLabel: p.auth?.oauth?.loginLabel ?? p.auth?.apiKey?.name ?? null,
           };
         });
         sendResponse(requestId, "get_providers", true, { providers: list });
@@ -1324,6 +1419,7 @@ const STATEFUL_COMMANDS = new Set([
   "open_dialogue",
   "close_dialogue",
   "activate_dialogue",
+  "login",
   "prompt",
   "steer",
   "follow_up",
@@ -1362,8 +1458,9 @@ rl.on("line", (line) => {
     sendResponse(undefined, "parse", false, undefined, "无法解析 JSON 指令");
     return;
   }
-  if (cmd.type === "abort" || cmd.type === "exit") {
-    // abort 立即执行以打断当前流式输出；exit 直接退出进程
+  if (cmd.type === "abort" || cmd.type === "exit" || cmd.type === "auth_input" || cmd.type === "login_abort") {
+    // 立即执行：abort 打断流式；exit 退出；
+    // auth_input/login_abort 必须绕过队列，否则会被挂起的 login 阻塞（死锁）
     void handleCommand(cmd);
     return;
   }

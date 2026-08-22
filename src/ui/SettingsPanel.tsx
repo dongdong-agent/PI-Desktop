@@ -2,8 +2,8 @@
  * 设置面板（模态）：模型提供商管理 + 通用设置 + 关于。
  * 数据全部来自真实 PI（providers/auth.json/settings.json），持久化后终端共享。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { piSend } from "../pi/bridge";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { bindPiEvents, piSend } from "../pi/bridge";
 import { usePiUiStore } from "../pi/piUiStore";
 import { useZoomLevel, zoomIn, zoomOut, zoomReset } from "../app/zoom";
 
@@ -41,6 +41,9 @@ interface ProviderItem {
   id: string;
   name: string;
   authed: boolean;
+  key?: string | null;
+  isSubscription?: boolean; // 支持订阅登录（OAuth）
+  loginLabel?: string | null;
 }
 
 /** 常用提供商（内置，便于直达申请页面） */
@@ -96,6 +99,21 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [extensions, setExtensions] = useState<ExtensionItem[]>([]);
   const [reloading, setReloading] = useState(false);
   const [candidates, setCandidates] = useState<Record<string, string[]>>(loadCandidates);
+  // 订阅登录（OAuth）流程状态：发起后监听 auth_event / auth_prompt 事件驱动 UI
+  const [loginFlow, setLoginFlow] = useState<{
+    providerId: string;
+    phase: "starting" | "url" | "prompt" | "done" | "err";
+    message?: string;
+    url?: string;
+    prompt?: {
+      type?: string;
+      message?: string;
+      placeholder?: string;
+    };
+    promptId?: string;
+  } | null>(null);
+  const [loginInput, setLoginInput] = useState("");
+  const loginInputRef = useRef<HTMLInputElement>(null);
   const models = usePiUiStore((s) => s.models);
 
   const refresh = useCallback(async () => {
@@ -138,6 +156,90 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 订阅登录（OAuth）事件监听：auth_event → 显示进度/打开浏览器；auth_prompt → 转输入框
+  useEffect(() => {
+    let disposed = false;
+    void bindPiEvents((ev) => {
+      if (disposed) return;
+      if (ev?.type === "auth_event") {
+        const e = ev.event ?? {};
+        setLoginFlow((prev) => {
+          if (!prev || prev.providerId !== ev.providerId) return prev;
+          if (e.type === "auth_url") {
+            return { ...prev, phase: "url", url: e.url, message: e.instructions ?? "请在浏览器完成授权" };
+          }
+          if (e.type === "device_code") {
+            return { ...prev, phase: "url", message: `请在浏览器输入配对代码：${e.code ?? ""}` };
+          }
+          if (e.type === "progress") return { ...prev, message: e.message };
+          if (e.type === "info") return { ...prev, message: e.message };
+          if (e.type === "success") return { ...prev, phase: "done", message: "登录成功 ✓" };
+          return prev;
+        });
+      } else if (ev?.type === "auth_prompt") {
+        setLoginFlow({
+          providerId: ev.providerId,
+          phase: "prompt",
+          prompt: ev.prompt ?? {},
+          promptId: ev.promptId,
+          message: ev.prompt?.message ?? "",
+        });
+        // 输入框自动聚焦（渲染后）
+        window.setTimeout(() => loginInputRef.current?.focus(), 60);
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // 发起订阅登录（OAuth）
+  const startLogin = useCallback(
+    async (p: ProviderItem) => {
+      setLoginFlow({ providerId: p.id, phase: "starting", message: "正在启动登录…" });
+      setLoginInput("");
+      const res = await piSend({ type: "login", providerId: p.id, method: "oauth" }).catch(() => null);
+      if (res && !res.success) {
+        setLoginFlow({ providerId: p.id, phase: "err", message: res?.error ?? "登录失败" });
+      } else if (res?.success) {
+        setLoginFlow((prev) => ({
+          ...(prev ?? { providerId: p.id }),
+          phase: "done",
+          message: "登录成功 ✓",
+        }));
+        void refresh();
+      }
+    },
+    [refresh],
+  );
+  // 打开授权浏览器
+  const openAuthUrl = useCallback(async (url?: string) => {
+    if (!url) return;
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url);
+    } catch {
+      window.open(url, "_blank");
+    }
+  }, []);
+  // 提交/取消登录输入
+  const submitAuthInput = useCallback(async () => {
+    if (!loginFlow?.promptId) return;
+    const pid = loginFlow.providerId;
+    await piSend({ type: "auth_input", promptId: loginFlow.promptId, value: loginInput }).catch(() => {});
+    setLoginFlow({ providerId: pid, phase: "url", promptId: undefined, message: "已提交，请完成剩余步骤…" });
+    setLoginInput("");
+  }, [loginFlow, loginInput]);
+  const cancelLogin = useCallback(async () => {
+    const pid = loginFlow?.providerId;
+    if (loginFlow?.promptId) {
+      await piSend({ type: "auth_input", promptId: loginFlow.promptId, cancel: true }).catch(() => {});
+    }
+    if (pid) await piSend({ type: "login_abort", providerId: pid }).catch(() => {});
+    setLoginFlow(null);
+    setLoginInput("");
+  }, [loginFlow]);
 
   const reloadResources = async () => {
     setReloading(true);
@@ -318,6 +420,69 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   <div className="settings__keyform-title">
                     配置 {selected.name}（{selected.id}）
                   </div>
+                  {selected.isSubscription && (
+                    <div className="settings__oauth">
+                      <button
+                        className="btn btn--primary"
+                        onClick={() => void startLogin(selected)}
+                        disabled={loginFlow?.phase !== undefined && loginFlow?.phase !== "done" && loginFlow?.phase !== "err"}
+                      >
+                        {selected.authed && !loginFlow ? "重新登录" : "订阅登录"}
+                        {selected.authed && !loginFlow ? "" : " · "}
+                        {selected.loginLabel ?? "OAuth"}
+                      </button>
+                      <span className="settings__oauth-hint">
+                        如果已有订阅（Claude Pro / ChatGPT Plus / Copilot 等），可选订阅登录而不用 API Key。
+                      </span>
+                    </div>
+                  )}
+                  {loginFlow && (
+                    <div className={`settings__loginflow settings__loginflow--${loginFlow.phase}`}>
+                      <div className="settings__loginflow-msg">{loginFlow.message ?? "…"}</div>
+                      {loginFlow.phase === "url" && loginFlow.url && (
+                        <div className="settings__loginflow-actions">
+                          <button className="btn btn--primary" onClick={() => void openAuthUrl(loginFlow.url)}>
+                            🌐 在浏览器打开授权页
+                          </button>
+                          {loginFlow.url && (
+                            <code className="settings__loginflow-url" title={loginFlow.url} onClick={() => void openAuthUrl(loginFlow.url)}>
+                              {loginFlow.url.slice(0, 90)}…
+                            </code>
+                          )}
+                        </div>
+                      )}
+                      {loginFlow.phase === "prompt" && (
+                        <div className="settings__loginflow-prompt">
+                          <input
+                            ref={loginInputRef}
+                            className="settings__keyinput"
+                            placeholder={loginFlow.prompt?.placeholder ?? "粘贴授权码 / API Key…"}
+                            value={loginInput}
+                            onChange={(e) => setLoginInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void submitAuthInput();
+                              if (e.key === "Escape") void cancelLogin();
+                            }}
+                          />
+                          <div className="settings__keybtns">
+                            <button className="btn btn--primary" onClick={() => void submitAuthInput()}>
+                              提交
+                            </button>
+                            <button className="btn" onClick={() => void cancelLogin()}>
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {(loginFlow.phase === "done" || loginFlow.phase === "err") && (
+                        <div className="settings__keybtns">
+                          <button className="btn" onClick={() => setLoginFlow(null)}>
+                            关闭
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="settings__keyform-hint">
                     API Key 会写入 ~/.pi/agent/auth.json，终端与桌面端共享。留空保存 = 移除。
                   </div>
