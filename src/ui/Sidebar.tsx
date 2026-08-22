@@ -8,6 +8,7 @@ import { loadZoom } from "../app/zoom";
 import { bindPiEvents, piSend } from "../pi/bridge";
 import { projectShortName, usePiUiStore, type DialogueItem } from "../pi/piUiStore";
 import { SettingsPanel } from "./SettingsPanel";
+import { ContextDialog } from "./ContextDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { SkillDialog } from "./SkillDialog";
 import { PinIcon, BubbleIcon, PencilIcon, LinkIcon, PlusIcon } from "./icons";
@@ -190,6 +191,7 @@ export function Sidebar() {
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [commands, setCommands] = useState<{ skills: SkillItem[]; extensions: { name?: string; path?: string }[] } | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
+  const [ctxOpen, setCtxOpen] = useState(false);
   const [pluginOpen, setPluginOpen] = useState(false);
   const [invoking, setInvoking] = useState<string | null>(null);
   // 技能调用对话框（描述驱动 + 快捷模板，替代 window.prompt）
@@ -864,6 +866,12 @@ export function Sidebar() {
         </nav>
       )}
 
+      {/* 上下文文件：查看/编辑 AGENTS.md / CLAUDE.md（注入模型上下文） */}
+      <button className="sidebar__toggle" onClick={() => setCtxOpen(true)}>
+        <span className="sidebar__toggle-arrow">▸</span>
+        <span className="sidebar__toggle-label">🧾 上下文文件</span>
+      </button>
+
       {/* 技能库：点击标题折叠/展开 */}
       <button className="sidebar__toggle" onClick={() => setSkillOpen((v) => !v)}>
         <span className="sidebar__toggle-arrow">{skillOpen ? "▾" : "▸"}</span>
@@ -1016,6 +1024,7 @@ export function Sidebar() {
       </div>
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {ctxOpen && <ContextDialog onClose={() => setCtxOpen(false)} />}
       {addProjectOpen && <AddProjectDialog onConfirm={addProject} onCancel={() => setAddProjectOpen(false)} />}
       {skillDialog && (
         <SkillDialog

@@ -1308,6 +1308,65 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "get_context_files": {
+        // 上下文文件（AGENTS.md / CLAUDE.md）：项目目录及祖先 + 全局 agentDir
+        // 返回列表与内容（includeContent 时），供 GUI 查看/编辑
+        const cwd = cmd.cwd ?? currentCwd ?? process.cwd();
+        const agentDir = pi.getAgentDir();
+        const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+        const scanDir = async (dir) => {
+          for (const fn of candidates) {
+            const fp = path.join(dir, fn);
+            try {
+              if ((await fs.stat(fp)).isFile()) return fp;
+            } catch {
+              /* skip */
+            }
+          }
+          return null;
+        };
+        const found = [];
+        const seen = new Set();
+        // 全局（agentDir）
+        const globalFp = await scanDir(agentDir);
+        if (globalFp) {
+          found.push({ path: globalFp, scope: "global" });
+          seen.add(globalFp);
+        }
+        // 项目（cwd 向上到盘根）
+        let dir = path.resolve(cwd);
+        while (true) {
+          const fp = await scanDir(dir);
+          if (fp && !seen.has(fp)) {
+            found.push({ path: fp, scope: dir === path.resolve(cwd) ? "project" : "ancestor" });
+            seen.add(fp);
+          }
+          const parent = path.dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
+        }
+        // 读取内容（限长 200KB 防阻塞）
+        const list = [];
+        for (const f of found) {
+          let content = null;
+          try {
+            const st = await fs.stat(f.path);
+            if (st.size <= 200 * 1024) content = await fs.readFile(f.path, "utf8");
+          } catch {
+            /* ignore */
+          }
+          list.push({
+            path: f.path,
+            filename: path.basename(f.path),
+            scope: f.scope,
+            exists: true,
+            content: cmd.includeContent ? content : null,
+          });
+        }
+        sendResponse(requestId, "get_context_files", true, { cwd, list });
+        break;
+      }
+
       case "search_sessions": {
         // 全局搜索：扫 ~/.pi/agent/sessions 的 jsonl 内容，返回命中会话与上下文片段
         const query = (cmd.query ?? "").trim();
