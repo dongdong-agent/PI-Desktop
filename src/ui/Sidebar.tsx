@@ -2,7 +2,7 @@
  * 侧栏：品牌 + 树状结构（未分类会话 + 项目节点可展开其会话）+ 技能库 + 主题 + 设置。
  * 数据来自 list_all_sessions（按项目分组，全部真实 PI 会话）。
  */
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
 import { loadZoom } from "../app/zoom";
 import { bindPiEvents, piSend } from "../pi/bridge";
@@ -228,6 +228,32 @@ export function Sidebar() {
   const dialogues = usePiUiStore((s) => s.dialogues);
   const activateDialogue = usePiUiStore((s) => s.activateDialogue);
   const closeDialogue = usePiUiStore((s) => s.closeDialogue);
+  // 全局搜索（会话内容）
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    { path: string; project: string; snippet: string }[]
+  >([]);
+  const [searching, setSearching] = useState(false);
+  const searchTimerRef = useRef(0);
+  const runSearch = useCallback((q: string) => {
+    window.clearTimeout(searchTimerRef.current);
+    if (!q.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    searchTimerRef.current = window.setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await piSend({ type: "search_sessions", query: q.trim(), limit: 30 });
+        if (res?.success) setSearchResults(res.data?.results ?? []);
+      } catch {
+        /* ignore */
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+  }, []);
 
   // 工作区自动保存：项目集 + 当前项目 + 主题/缩放 快照（显示即已保存）
   useEffect(() => {
@@ -629,6 +655,80 @@ export function Sidebar() {
       <button className="btn btn--block btn--new" onClick={newSession}>
         ＋ 新建 PI 会话
       </button>
+
+      {/* 全局搜索：会话内容检索，结果点击打开对应会话 */}
+      <div className="sidebar__search">
+        <div className="sidebar__search-row">
+          <input
+            className="sidebar__search-input"
+            placeholder="🔍 搜索对话内容…"
+            value={searchQuery}
+            onFocus={() => setSearchOpen(true)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setSearchOpen(true);
+              runSearch(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setSearchOpen(false);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+          {searchOpen && (
+            <button
+              className="sidebar__search-clear"
+              title="关闭搜索"
+              onClick={() => {
+                setSearchOpen(false);
+                setSearchQuery("");
+                setSearchResults([]);
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        {searchOpen &&
+          (searching ? (
+            <div className="sidebar__placeholder">
+              <p>搜索中…</p>
+            </div>
+          ) : searchQuery.trim() && searchResults.length === 0 ? (
+            <div className="sidebar__placeholder">
+              <p>未找到「{searchQuery.trim()}」相关对话</p>
+            </div>
+          ) : searchResults.length > 0 ? (
+            <div className="sidebar__search-results">
+              {searchResults.map((r, i) => (
+                <button
+                  key={`${r.path}-${i}`}
+                  className="sidebar__search-item"
+                  title={r.path}
+                  onClick={() => {
+                    void piSend({ type: "switch_session", sessionPath: r.path }).then((res) => {
+                      if (res?.success) {
+                        usePiUiStore.setState({
+                          currentDialogueId: res.data?.dialogueId ?? null,
+                          currentCwd: res.data?.cwd ?? null,
+                        });
+                        setSearchOpen(false);
+                        setSearchQuery("");
+                        setSearchResults([]);
+                        notifySessionChanged();
+                        void refresh();
+                      }
+                    });
+                  }}
+                >
+                  <div className="sidebar__search-item-snippet">{r.snippet}</div>
+                  <div className="sidebar__search-item-meta">{r.project}</div>
+                </button>
+              ))}
+            </div>
+          ) : null)}
+      </div>
 
       <div className={`sidebar__scroll${dragging ? " sidebar__scroll--drag" : ""}`}>
       {dragging && (

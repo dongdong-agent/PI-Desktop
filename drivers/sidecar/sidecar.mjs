@@ -1205,6 +1205,57 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "search_sessions": {
+        // 全局搜索：扫 ~/.pi/agent/sessions 的 jsonl 内容，返回命中会话与上下文片段
+        const query = (cmd.query ?? "").trim();
+        if (!query) {
+          sendResponse(requestId, "search_sessions", false, undefined, "缺少搜索词");
+          break;
+        }
+        const lower = query.toLowerCase();
+        const limit = Math.min(cmd.limit ?? 30, 100);
+        const agentDir = pi.getAgentDir();
+        const sessionsDir = path.join(agentDir, "sessions");
+        const results = [];
+        try {
+          const dirs = await fs.readdir(sessionsDir, { withFileTypes: true });
+          for (const entry of dirs) {
+            if (!entry.isDirectory()) continue;
+            const sub = path.join(sessionsDir, entry.name);
+            let files = [];
+            try {
+              files = (await fs.readdir(sub)).filter((f) => f.endsWith(".jsonl"));
+            } catch {
+              continue;
+            }
+            files.sort().reverse(); // 最新的在前
+            for (const f of files.slice(0, 30)) {
+              const fp = path.join(sub, f);
+              try {
+                const content = await fs.readFile(fp, "utf8");
+                const idx = content.toLowerCase().indexOf(lower);
+                if (idx >= 0) {
+                  // 提取命中附近的可读片段（剥离 JSON 噪声，压缩空白）
+                  const raw = content.slice(Math.max(0, idx - 100), idx + 220);
+                  const snippet = raw.replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 260);
+                  results.push({ path: fp, project: entry.name, snippet });
+                  if (results.length >= limit) break;
+                }
+              } catch {
+                /* 单文件跳过 */
+              }
+            }
+            if (results.length >= limit) break;
+          }
+        } catch (e) {
+          sendResponse(requestId, "search_sessions", false, undefined,
+            e instanceof Error ? e.message : String(e));
+          break;
+        }
+        sendResponse(requestId, "search_sessions", true, { results, count: results.length, query });
+        break;
+      }
+
       case "list_all_sessions": {
         // 全量扫描：按项目分组列出所有会话；无 cwd 归属的列入 orphaned（未分类）
         try {
