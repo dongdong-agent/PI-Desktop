@@ -12,9 +12,13 @@ export function friendlyError(raw: string): string {
       "建议：点「压缩上下文」将大型工具输出摘要化，再重新发送。"
     );
   }
-  // 529 overloaded / rate limit
-  if (/(529|overloaded|rate\s*limit|too\s*many\s*requests)/i.test(s)) {
-    return "上游服务过载或限流（529/429），稍后自动重试或过一会儿再试。";
+  // 529 overloaded
+  if (/(529|overloaded)/i.test(s)) {
+    return "上游服务过载（529），已自动重试；持续失败请稍后再试。";
+  }
+  // 429 rate limit（含重试时间）
+  if (/(429|rate\s*limit|too\s*many\s*requests)/i.test(s)) {
+    return "请求频率受限（429）：请稍等片刻再发送（通常几十秒后自动恢复）。";
   }
   // 认证
   if (/(401|unauthorized|invalid\s*api\s*key|authentication)/i.test(s)) {
@@ -28,6 +32,26 @@ export function friendlyError(raw: string): string {
   if (/(model\s*not\s*found|404)/i.test(s)) {
     return "模型不存在或不可用：请重新选择模型。";
   }
+  // 上下文超长（400 context length）
+  if (/(context\s*length|context\s*window|maximum\s*context|too\s*long|input.*exceed)/i.test(s)) {
+    return "上下文超出窗口限制：请点「压缩上下文」精简历史后重发，或新建会话。";
+  }
+  // 服务端错误
+  if (/(5\d\d|internal\s*server|bad\s*gateway|service\s*unavailable)/i.test(s)) {
+    return "模型服务端错误（5xx）：已自动重试；持续失败请稍后再试或换模型。";
+  }
+  // 超时
+  if (/(timeout|timed\s*out|deadline\s*exceeded)/i.test(s)) {
+    return "请求超时：网络或模型响应过慢，可重试或检查网络。";
+  }
+  // 网络错误
+  if (/(fetch\s*failed|network\s*error|ENOTFOUND|ECONNREFUSED|ECONNRESET|EPIPE)/i.test(s)) {
+    return "网络错误（无法连接模型服务）：请检查网络后重试。";
+  }
+  // 内容审核
+  if (/(moderation|content\s*policy|policy\s*violation|harmful)/i.test(s)) {
+    return "内容被审核拦截：请调整措辞后重试（避免敏感/危险内容）。";
+  }
 
   // 尝试剥离 JSON 包装，只留 message 字段
   try {
@@ -37,4 +61,13 @@ export function friendlyError(raw: string): string {
     /* 非 JSON，原样返回 */
   }
   return s;
+}
+
+/** 判断是否值得自动重试（临时性错误：限流/过载/5xx/超时/网络） */
+export function isRetryableError(raw: string): boolean {
+  if (!raw) return false;
+  const s = String(raw);
+  return /(529|overloaded|429|rate\s*limit|too\s*many\s*requests|5\d\d|internal\s*server|bad\s*gateway|service\s*unavailable|timeout|timed\s*out|fetch\s*failed|network\s*error|ENOTFOUND|ECONNREFUSED|ECONNRESET|EPIPE|deadline\s*exceeded)/i.test(
+    s,
+  );
 }

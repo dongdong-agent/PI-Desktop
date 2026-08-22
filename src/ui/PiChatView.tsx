@@ -20,6 +20,7 @@ import {
   type PiViewMessage,
   type PiChatUiState,
 } from "../pi/eventModel";
+import { friendlyError, isRetryableError } from "../pi/errorFriendly";
 
 /** 把剪贴板图片读取为 base64 dataURL；过大时 canvas 降采样到 ≤1280 控体积（防上游 413）。 */
 function imageFileToDataUrl(file: Blob): Promise<string> {
@@ -532,23 +533,36 @@ export function PiChatView() {
           }
         }
 
-        void piSend({
-          type: "prompt",
-          message: payload,
-          streamingBehavior: "steer",
-          dialogueId: usePiUiStore.getState().currentDialogueId ?? undefined,
-          images: imgs.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
-        })
-          .then((res) => {
-            if (res && res.success === false) {
-              console.warn("[diag] prompt rejected: " + (res.error ?? ""));
-              setUi((prev) => markLastError(prev, `发送被拒绝：${res.error ?? "未知原因"}`));
-            }
+        const attempt = (retryLeft: number): Promise<unknown> =>
+          piSend({
+            type: "prompt",
+            message: payload,
+            streamingBehavior: "steer",
+            dialogueId: usePiUiStore.getState().currentDialogueId ?? undefined,
+            images: imgs.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
           })
-          .catch((e) => {
-            console.warn("[diag] prompt send error: " + String(e));
-            setUi((prev) => markLastError(prev, String(e)));
-          });
+            .then((res) => {
+              if (res && res.success === false) {
+                const err = res.error ?? "";
+                // 临时性错误（限流/过载/5xx/超时/网络）：自动重试（最多 2 次，指数退避）
+                if (retryLeft > 0 && isRetryableError(err)) {
+                  console.warn(`[diag] prompt 可重试错误，${retryLeft} 次后重试: ` + err.slice(0, 120));
+                  return new Promise((r) => setTimeout(() => r(attempt(retryLeft - 1)), 1500 * (3 - retryLeft)));
+                }
+                console.warn("[diag] prompt rejected: " + err);
+                setUi((prev) => markLastError(prev, friendlyError(err || "未知原因")));
+              }
+              return null;
+            })
+            .catch((e) => {
+              console.warn("[diag] prompt send error: " + String(e));
+              if (retryLeft > 0 && isRetryableError(String(e))) {
+                return new Promise((r) => setTimeout(() => r(attempt(retryLeft - 1)), 1500 * (3 - retryLeft)));
+              }
+              setUi((prev) => markLastError(prev, friendlyError(String(e))));
+              return null;
+            });
+        void attempt(2);
         // 无响应诊断：10 秒后若仍未收到任何事件，才提示（正常流式不打扰）
         window.clearTimeout(diagTimerRef.current);
         diagTimerRef.current = window.setTimeout(async () => {
