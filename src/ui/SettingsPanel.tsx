@@ -44,6 +44,14 @@ function fmtDuration(seconds: number): string {
   return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+/** 字节 → 人类可读大小 */
+function fmtSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+  return `${bytes}B`;
+}
+
 interface ProviderItem {
   id: string;
   name: string;
@@ -119,6 +127,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     };
     promptId?: string;
   } | null>(null);
+  // 数据管理（备份/清理）
+  const [dataBusy, setDataBusy] = useState("");
+  const [cleanDays, setCleanDays] = useState("30");
   const [loginInput, setLoginInput] = useState("");
   const loginInputRef = useRef<HTMLInputElement>(null);
   // 自定义 provider（~/.pi/agent/models.json）表单
@@ -799,6 +810,77 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                     {Math.round(zoomLevel * 100)}%
                   </button>
                   <button className="zoomctl__btn" onClick={() => zoomIn()} title="放大（Ctrl + +）">＋</button>
+                </div>
+              </div>
+
+              <div className="settings__group-label">数据管理</div>
+              <div className="settings__data">
+                <button
+                  className="btn"
+                  onClick={async () => {
+                    try {
+                      const { open } = await import("@tauri-apps/plugin-dialog");
+                      const dir = await open({ directory: true, title: "选择备份目录" });
+                      if (!dir || Array.isArray(dir)) return;
+                      setDataBusy("备份中…");
+                      const res = await piSend({ type: "backup_sessions", targetDir: dir as string });
+                      setDataBusy("");
+                      if (res?.success) {
+                        setSavedMsg(
+                          `已备份 ${res.data.copied} 个会话（${fmtSize(res.data.totalBytes)}）到 ${res.data.target}`,
+                        );
+                      } else {
+                        setSavedMsg(`备份失败：${res?.error ?? ""}`);
+                      }
+                    } catch {
+                      setDataBusy("");
+                    }
+                  }}
+                  disabled={!!dataBusy}
+                >
+                  {dataBusy ? dataBusy : "📦 备份全部会话"}
+                </button>
+                <div className="settings__data-clean">
+                  <span className="settings__data-clean-label">清理早于 N 天的会话</span>
+                  <input
+                    className="settings__data-clean-input"
+                    type="number"
+                    min={1}
+                    value={cleanDays}
+                    onChange={(e) => setCleanDays(e.target.value)}
+                  />
+                  <button
+                    className="btn"
+                    onClick={async () => {
+                      const days = Number(cleanDays);
+                      if (!days || days < 1) return;
+                      setDataBusy("检查中…");
+                      const res = await piSend({ type: "cleanup_sessions", olderThanDays: days, dryRun: true });
+                      setDataBusy("");
+                      if (res?.success && res.data.count > 0) {
+                        if (
+                          window.confirm(
+                            `将删除 ${res.data.count} 个 ${days} 天前的会话（${fmtSize(res.data.totalBytes)}），确认删除？`,
+                          )
+                        ) {
+                          setDataBusy("删除中…");
+                          const rm = await piSend({ type: "cleanup_sessions", olderThanDays: days, dryRun: false });
+                          setDataBusy("");
+                          setSavedMsg(rm?.success ? `已删除 ${rm.data.count} 个旧会话` : `删除失败：${rm?.error ?? ""}`);
+                        } else {
+                          setSavedMsg("已取消清理");
+                        }
+                      } else if (res?.success) {
+                        setSavedMsg(`没有找到 ${days} 天前的会话（或已全部清理）`);
+                      }
+                    }}
+                    disabled={!!dataBusy}
+                  >
+                    {dataBusy ? dataBusy : "🧹 清理旧会话"}
+                  </button>
+                </div>
+                <div className="settings__data-hint">
+                  备份会把全部会话 jsonl 复制到所选目录（按项目分子目录）；清理只动 ~/.pi/agent/sessions 下早于指定天数的文件。
                 </div>
               </div>
             </div>

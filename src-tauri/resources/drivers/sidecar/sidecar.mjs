@@ -1205,6 +1205,109 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "backup_sessions": {
+        // 备份全部会话：复制 ~/.pi/agent/sessions 下的 jsonl 到目标目录（按项目分子目录）
+        if (!cmd.targetDir) {
+          sendResponse(requestId, "backup_sessions", false, undefined, "缺少目标目录");
+          break;
+        }
+        try {
+          const agentDir = pi.getAgentDir();
+          const sessionsDir = path.join(agentDir, "sessions");
+          const target = cmd.targetDir;
+          await fs.mkdir(target, { recursive: true });
+          let copied = 0;
+          let totalBytes = 0;
+          const dirs = await fs.readdir(sessionsDir, { withFileTypes: true });
+          for (const entry of dirs) {
+            if (!entry.isDirectory()) continue;
+            const sub = path.join(sessionsDir, entry.name);
+            let files = [];
+            try {
+              files = (await fs.readdir(sub)).filter((f) => f.endsWith(".jsonl"));
+            } catch {
+              continue;
+            }
+            if (files.length === 0) continue;
+            const outDir = path.join(target, entry.name);
+            await fs.mkdir(outDir, { recursive: true });
+            for (const f of files) {
+              const src = path.join(sub, f);
+              const stat = await fs.stat(src);
+              await fs.copyFile(src, path.join(outDir, f));
+              copied++;
+              totalBytes += stat.size;
+            }
+          }
+          sendResponse(requestId, "backup_sessions", true, {
+            target,
+            copied,
+            totalBytes,
+            projects: dirs.filter((d) => d.isDirectory()).length,
+          });
+        } catch (e) {
+          sendResponse(requestId, "backup_sessions", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
+      case "cleanup_sessions": {
+        // 清理旧会话（dryRun=true 时仅列出，不删除）：删除修改时间早于 N 天的 jsonl
+        const olderThanDays = Math.max(1, Number(cmd.olderThanDays ?? 30));
+        const dryRun = cmd.dryRun !== false;
+        try {
+          const agentDir = pi.getAgentDir();
+          const sessionsDir = path.join(agentDir, "sessions");
+          const cutoff = Date.now() - olderThanDays * 86_400_000;
+          const toDelete = [];
+          let totalBytes = 0;
+          const dirs = await fs.readdir(sessionsDir, { withFileTypes: true });
+          for (const entry of dirs) {
+            if (!entry.isDirectory()) continue;
+            const sub = path.join(sessionsDir, entry.name);
+            let files = [];
+            try {
+              files = (await fs.readdir(sub)).filter((f) => f.endsWith(".jsonl"));
+            } catch {
+              continue;
+            }
+            for (const f of files) {
+              const fp = path.join(sub, f);
+              try {
+                const st = await fs.stat(fp);
+                if (st.mtimeMs < cutoff) {
+                  toDelete.push(fp);
+                  totalBytes += st.size;
+                }
+              } catch {
+                /* skip */
+              }
+            }
+          }
+          if (!dryRun) {
+            for (const fp of toDelete) {
+              try {
+                await fs.rm(fp, { force: true });
+              } catch {
+                /* skip */
+              }
+            }
+          }
+          sendResponse(requestId, "cleanup_sessions", true, {
+            dryRun,
+            olderThanDays,
+            toDelete: dryRun ? toDelete : [],
+            count: toDelete.length,
+            totalBytes,
+          });
+        } catch (e) {
+          sendResponse(requestId, "cleanup_sessions", false, undefined,
+            e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+
       case "search_sessions": {
         // 全局搜索：扫 ~/.pi/agent/sessions 的 jsonl 内容，返回命中会话与上下文片段
         const query = (cmd.query ?? "").trim();

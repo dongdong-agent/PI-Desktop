@@ -2617,6 +2617,40 @@ body {
   word-break: break-all;
 }
 
+/* 数据管理（备份/清理） */
+.settings__data {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.settings__data-clean {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings__data-clean-label {
+  font-size: 0.7857rem;
+  color: var(--text-dim);
+}
+
+.settings__data-clean-input {
+  width: 72px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.7857rem;
+}
+
+.settings__data-hint {
+  font-size: 0.6429rem;
+  color: var(--text-dim);
+}
+
 .settings__keyform-hint {
   font-size: 0.7857rem;
   color: var(--text-dim);
