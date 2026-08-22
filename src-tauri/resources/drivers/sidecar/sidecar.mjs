@@ -1242,6 +1242,68 @@ async function handleCommand(cmd) {
         break;
       }
 
+      case "session_stats_history": {
+        // 用量统计：按天聚合会话消息数 / token / 花费（扫描各项目最近若干会话）
+        const days = Math.min(Math.max(Number(cmd.days ?? 14), 1), 90);
+        const agentDir = pi.getAgentDir();
+        const sessionsDir = path.join(agentDir, "sessions");
+        const byDay = new Map();
+        try {
+          const dirs = await fs.readdir(sessionsDir, { withFileTypes: true });
+          for (const entry of dirs) {
+            if (!entry.isDirectory()) continue;
+            const sub = path.join(sessionsDir, entry.name);
+            let files = [];
+            try {
+              files = (await fs.readdir(sub)).filter((f) => f.endsWith(".jsonl"));
+            } catch {
+              continue;
+            }
+            files.sort().reverse();
+            // 每项目最近 3 个会话（统计历史取近似，避免全扫描过慢）
+            for (const f of files.slice(0, 3)) {
+              const fp = path.join(sub, f);
+              try {
+                const content = await fs.readFile(fp, "utf8");
+                for (const line of content.split("\n")) {
+                  if (!line.trim()) continue;
+                  let e;
+                  try {
+                    e = JSON.parse(line);
+                  } catch {
+                    continue;
+                  }
+                  const m = e?.message;
+                  if (m?.role !== "assistant" || !m?.usage) continue;
+                  const day = (e?.timestamp ?? "").slice(0, 10);
+                  if (!day) continue;
+                  const bucket = byDay.get(day) ?? { day, messages: 0, tokens: 0, cost: 0 };
+                  bucket.messages++;
+                  bucket.tokens += m.usage.totalTokens ?? 0;
+                  const c = m.usage.cost;
+                  bucket.cost += typeof c === "number" ? c : c?.total ?? 0;
+                  byDay.set(day, bucket);
+                }
+              } catch {
+                /* 单文件跳过 */
+              }
+            }
+          }
+        } catch (e) {
+          sendResponse(requestId, "session_stats_history", false, undefined,
+            e instanceof Error ? e.message : String(e));
+          break;
+        }
+        // 按天排序（最近在前），缺的天补 0（便于前端画连续柱状图）
+        const list = [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).slice(0, days);
+        const totals = list.reduce(
+          (acc, d) => ({ messages: acc.messages + d.messages, tokens: acc.tokens + d.tokens, cost: acc.cost + d.cost }),
+          { messages: 0, tokens: 0, cost: 0 },
+        );
+        sendResponse(requestId, "session_stats_history", true, { days: list, totals });
+        break;
+      }
+
       case "diagnostics": {
         // GUI 诊断面板：sidecar / PI 内核 / 关键文件 / 对话池状态
         try {

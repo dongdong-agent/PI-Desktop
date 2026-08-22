@@ -7,6 +7,7 @@ import { applyTheme, loadTheme, THEMES, type ThemeName } from "../app/theme";
 import { loadZoom } from "../app/zoom";
 import { bindPiEvents, piSend } from "../pi/bridge";
 import { projectShortName, usePiUiStore, type DialogueItem } from "../pi/piUiStore";
+import { wsKey } from "../app/workspace";
 import { SettingsPanel } from "./SettingsPanel";
 import { ContextDialog } from "./ContextDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
@@ -262,7 +263,7 @@ export function Sidebar() {
   useEffect(() => {
     try {
       localStorage.setItem(
-        "aiwb:workspace",
+        wsKey("workspace"),
         JSON.stringify({
           projects: projects.map((p) => p.cwd),
           lastCwd: currentCwd ?? null,
@@ -280,7 +281,7 @@ export function Sidebar() {
   useEffect(() => {
     if (currentCwd) {
       try {
-        localStorage.setItem("aiwb:last-cwd", currentCwd);
+        localStorage.setItem(wsKey("last-cwd"), currentCwd);
       } catch {
         /* ignore */
       }
@@ -338,8 +339,8 @@ export function Sidebar() {
     const restore = () => {
       if (isFresh) return;
       try {
-        const lastCwd = localStorage.getItem("aiwb:last-cwd");
-        const lastSession = localStorage.getItem("aiwb:last-session");
+        const lastCwd = localStorage.getItem(wsKey("last-cwd"));
+        const lastSession = localStorage.getItem(wsKey("last-session"));
         if (lastCwd && lastCwd !== (window as unknown as { __lastCwd?: string | null }).__lastCwd) {
           void switchProject(lastCwd).then((ok) => {
             if (ok && lastSession) {
@@ -496,7 +497,7 @@ export function Sidebar() {
   const switchSession = useCallback(
     (path: string) => {
       try {
-        localStorage.setItem("aiwb:last-session", path);
+        localStorage.setItem(wsKey("last-session"), path);
       } catch {
         /* ignore */
       }
@@ -601,7 +602,7 @@ export function Sidebar() {
             await usePiUiStore.getState().switchProject(others[0].cwd);
           } else {
             try {
-              localStorage.removeItem("aiwb:last-cwd");
+              localStorage.removeItem(wsKey("last-cwd"));
             } catch {
               /* ignore */
             }

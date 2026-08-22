@@ -52,6 +52,13 @@ function fmtSize(bytes: number): string {
   return `${bytes}B`;
 }
 
+/** Token 数 → 可读（万/M 单位） */
+function fmtTokens2(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 interface ProviderItem {
   id: string;
   name: string;
@@ -133,6 +140,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   // 内核更新检查/下载
   const [piUpdate, setPiUpdate] = useState<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
   const [updateBusy, setUpdateBusy] = useState("");
+  // 用量统计
+  const [statsHistory, setStatsHistory] = useState<{
+    days: { day: string; messages: number; tokens: number; cost: number }[];
+    totals: { messages: number; tokens: number; cost: number };
+  } | null>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
   const [loginInput, setLoginInput] = useState("");
   const loginInputRef = useRef<HTMLInputElement>(null);
   // 自定义 provider（~/.pi/agent/models.json）表单
@@ -334,6 +347,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
     } finally {
       setUpdateBusy("");
+    }
+  };
+  // 加载用量统计
+  const loadStatsHistory = async (days = 14) => {
+    setStatsBusy(true);
+    try {
+      const res = await piSend({ type: "session_stats_history", days });
+      if (res?.success) setStatsHistory(res.data ?? null);
+    } finally {
+      setStatsBusy(false);
     }
   };
 
@@ -915,6 +938,41 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="settings__data-hint">
                   备份会把全部会话 jsonl 复制到所选目录（按项目分子目录）；清理只动 ~/.pi/agent/sessions 下早于指定天数的文件。
+                </div>
+              </div>
+
+              <div className="settings__group-label">用量统计</div>
+              <div className="settings__stats">
+                <button
+                  className="btn"
+                  onClick={() => void loadStatsHistory(14)}
+                  disabled={statsBusy}
+                >
+                  {statsBusy ? "统计中…" : "📊 近 14 天用量"}
+                </button>
+                {statsHistory && (
+                  <div className="settings__stats-body">
+                    <div className="settings__stats-totals">
+                      <span>消息 {statsHistory.totals.messages}</span>
+                      <span>Token {fmtTokens2(statsHistory.totals.tokens)}</span>
+                      <span>费用 ${statsHistory.totals.cost.toFixed(2)}</span>
+                    </div>
+                    <div className="settings__stats-bars">
+                      {statsHistory.days.map((d) => {
+                        const max = Math.max(1, ...statsHistory.days.map((x) => x.messages));
+                        const h = Math.max(3, Math.round((d.messages / max) * 60));
+                        return (
+                          <div key={d.day} className="settings__stats-bar" title={`${d.day}\n消息 ${d.messages} · Token ${fmtTokens2(d.tokens)} · $${d.cost.toFixed(2)}`}>
+                            <div className="settings__stats-bar-fill" style={{ height: `${h}px` }} />
+                            <span className="settings__stats-bar-day">{d.day.slice(5)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="settings__data-hint">
+                  统计基于各项目最近会话的 token/费用数据（近似值，用于趋势观察）。
                 </div>
               </div>
             </div>

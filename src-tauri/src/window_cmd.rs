@@ -61,10 +61,13 @@ pub fn win_new(app: AppHandle) -> Result<(), String> {
         return Ok(()); // 已存在则复用，避免同 label 冲突
     }
     let label = "new";
+    // 新窗口 = 新工作区：带唯一 ws id（前端据此隔离项目/对话/对话池的本地存储）
+    let ws_id = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis()).unwrap_or(0), std::process::id());
     let _w = tauri::WebviewWindowBuilder::new(
         &app,
         label,
-        tauri::WebviewUrl::App("index.html?fresh=1".into()),
+        tauri::WebviewUrl::App(format!("index.html?fresh=1&ws={ws_id}").into()),
     )
     .title("PI Agent")
     .inner_size(1080.0, 720.0)

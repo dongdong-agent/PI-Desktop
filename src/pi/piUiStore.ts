@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import { piSend } from "./bridge";
+import { wsKey } from "../app/workspace";
 
 export interface ProjectItem {
   cwd: string;
@@ -85,7 +86,7 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
       // 优先恢复上次项目（recent），无则新建会话。
       let lastCwd: string | null = null;
       try {
-        lastCwd = localStorage.getItem("aiwb:last-cwd");
+        lastCwd = localStorage.getItem(wsKey("last-cwd"));
       } catch {
         /* ignore */
       }
@@ -200,7 +201,7 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
           .map((d: { sessionPath?: string | null }) => d.sessionPath)
           .filter((p: string | null | undefined): p is string => typeof p === "string" && p.length > 0);
         try {
-          localStorage.setItem("aiwb:dlg-pool", JSON.stringify(paths.slice(0, 8)));
+          localStorage.setItem(wsKey("dlg-pool"), JSON.stringify(paths.slice(0, 8)));
         } catch {
           /* ignore */
         }
