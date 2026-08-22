@@ -4,7 +4,7 @@
  * 支持 request/response 关联：piSend 返回 Promise，由事件流中的 response 回包 resolve。
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 
 /** 是否运行在 Tauri 环境（网页版预览时为 false） */
 export function isTauriEnv(): boolean {
@@ -12,10 +12,18 @@ export function isTauriEnv(): boolean {
 }
 
 let bound = false;
-let unlistenPromise: Promise<UnlistenFn> | null = null;
+let unlistenPromise: Promise<unknown> | null = null;
 let seq = 0;
 const pending = new Map<string, (res: any) => void>();
 const eventListeners = new Set<(event: any) => void>();
+// sidecar 生命周期事件监听（崩溃/重启）
+const bridgeListeners = new Set<(event: any) => void>();
+
+/** 订阅 sidecar 生命周期事件（sidecar_exit / sidecar_start / sidecar_error） */
+export async function bindPiBridgeEvents(onEvent: (event: any) => void): Promise<void> {
+  await ensureBound();
+  bridgeListeners.add(onEvent);
+}
 
 function dispatch(parsed: any) {
   // 1) response 回包 → resolve 对应请求
@@ -47,21 +55,39 @@ function dispatch(parsed: any) {
 async function ensureBound(): Promise<void> {
   if (bound) return;
   if (!unlistenPromise) {
-    unlistenPromise = listen<string>("pi_event", (e) => {
-      const raw = (e.payload ?? "").trim();
-      if (!raw) return; // 空行直接忽略，不视为解析失败
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        // 非 JSON 行：仅记录，便于排查，不再对空/噪声行弹出错误横幅
-        console.warn("[bridge] 无法解析事件行:", raw.slice(0, 300));
-        parsed = { type: "bridge_error", error: "事件解析失败" };
-      }
-      dispatch(parsed);
-    }).then((unlisten) => {
+    unlistenPromise = Promise.all([
+      listen<string>("pi_event", (e) => {
+        const raw = (e.payload ?? "").trim();
+        if (!raw) return; // 空行直接忽略，不视为解析失败
+        let parsed: any;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          // 非 JSON 行：仅记录，便于排查，不再对空/噪声行弹出错误横幅
+          console.warn("[bridge] 无法解析事件行:", raw.slice(0, 300));
+          parsed = { type: "bridge_error", error: "事件解析失败" };
+        }
+        dispatch(parsed);
+      }),
+      // sidecar 生命周期事件（崩溃/重启）：转发给视图，由 piUiStore 处理重连
+      listen<string>("pi_bridge_event", (e) => {
+        let ev: any = {};
+        try {
+          ev = JSON.parse(String(e.payload ?? ""));
+        } catch {
+          /* ignore */
+        }
+        for (const cb of [...bridgeListeners]) {
+          try {
+            cb(ev);
+          } catch {
+            /* ignore */
+          }
+        }
+      }),
+    ]).then(() => {
       bound = true;
-      return unlisten;
+      return () => {};
     });
   }
   await unlistenPromise;

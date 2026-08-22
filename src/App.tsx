@@ -8,6 +8,7 @@ import { applyZoom, loadZoom, zoomIn, zoomOut, zoomReset } from "./app/zoom";
 import { Sidebar } from "./ui/Sidebar";
 import { PiChatView } from "./ui/PiChatView";
 import { TitleBar } from "./ui/TitleBar";
+import { usePiUiStore } from "./pi/piUiStore";
 import "./styles.css";
 
 /** 缩放快捷键：Ctrl/Cmd + - / + / 0（上下限与步进在 zoom.ts 定义）。
@@ -99,6 +100,38 @@ export default function App() {
   useZoomShortcut();
   // F12 开发者工具
   useDevtoolsShortcut();
+
+  // sidecar 崩溃/重启：重启完成后自动重新加载（对话池恢复）+ 提示
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const { bindPiBridgeEvents } = await import("./pi/bridge");
+        await bindPiBridgeEvents((ev) => {
+          if (disposed) return;
+          if (ev.type === "sidecar_exit") {
+            usePiUiStore.setState({
+              error: "PI 驱动进程异常退出，正在自动重启…",
+              loading: true,
+            });
+            window.dispatchEvent(new CustomEvent("pi:session-changed"));
+          } else if (ev.type === "sidecar_start") {
+            if (ev.restart) {
+              void usePiUiStore.getState().loadAll();
+              window.dispatchEvent(new CustomEvent("pi:session-changed"));
+            }
+          } else if (ev.type === "sidecar_error") {
+            usePiUiStore.setState({ error: `PI 驱动重启失败：${ev.error ?? "未知"}` });
+          }
+        });
+      } catch {
+        /* 桥未就绪忽略 */
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   return (
     <ErrorBoundary>
