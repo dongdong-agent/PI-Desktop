@@ -98,18 +98,28 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
         set({ currentDialogueId: initRes.data.dialogueId });
         if (initRes.data.cwd) set({ currentCwd: initRes.data.cwd });
       }
-      const [projRes, stateRes, modelRes] = await Promise.all([
+      const [projRes, stateRes, modelRes, provRes] = await Promise.all([
         piSend({ type: "list_projects" }),
         piSend({ type: "get_state" }),
         piSend({ type: "get_available_models" }),
+        piSend({ type: "get_providers" }).catch(() => null),
       ]);
       const projects = projRes?.success ? (projRes.data?.projects ?? []) : [];
       const cwd = stateRes?.success ? (stateRes.data?.cwd ?? null) : null;
       const dialogueId = stateRes?.success ? (stateRes.data?.dialogueId ?? null) : null;
       const models = modelRes?.success ? (modelRes.data?.models ?? []) : [];
+      // 认证态 provider 集合：未认证 provider 的模型不出现在选择列表，
+      // 避免用户选中 OpenCode Zen 之类未配 key 的 provider（模型同名，极易选错）
+      const authedProviders = new Set(
+        (provRes?.success ? (provRes.data?.providers ?? []) : [])
+          .filter((p: { authed?: boolean }) => p.authed)
+          .map((p: { id: string }) => p.id),
+      );
       // 去重键 = provider:id（同 id 不同 provider 的模型都保留，标注提供商）
       const seen = new Set<string>();
       const uniqueModels = models.filter((m: { id: string; provider: string }) => {
+        // 没有任何已认证 provider 时（首次使用/全部未配）不过滤，避免误杀
+        if (authedProviders.size > 0 && !authedProviders.has(m.provider)) return false;
         const key = `${m.provider}:${m.id}`;
         if (seen.has(key)) return false;
         seen.add(key);
@@ -117,12 +127,15 @@ export const usePiUiStore = create<PiUiState>()((set, get) => ({
       });
       const modelId = stateRes?.success ? (stateRes.data?.model ?? null) : null;
       const provider = stateRes?.success ? (stateRes.data?.provider ?? null) : null;
+      // 当前模型若属于未认证 provider（已被过滤）→ 置空，避免下拉显示幽灵选项
+      const currentAuthed =
+        authedProviders.size === 0 || (provider && authedProviders.has(provider));
       set({
         projects,
         currentCwd: cwd,
         currentDialogueId: dialogueId,
         models: uniqueModels,
-        currentModelRef: modelId && provider ? `${provider}/${modelId}` : null,
+        currentModelRef: currentAuthed && modelId && provider ? `${provider}/${modelId}` : null,
         thinkingLevel: stateRes?.success ? (stateRes.data?.thinkingLevel ?? null) : null,
       });
       // sidecar init 可能未完成：模型空时自动重试（每 2s，最多 8 次）
