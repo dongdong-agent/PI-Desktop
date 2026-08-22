@@ -26,11 +26,24 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
 console.log(`\n=== PI Agent 发布 v${version} ===\n`);
 
 // 0) 检查 gh
-try {
-  run("gh --version", { stdio: "pipe" });
-} catch {
+const ghCheck = run("gh --version", { stdio: "pipe" }).toString().trim();
+if (!ghCheck) {
   console.error("需要 gh CLI（https://cli.github.com）");
   process.exit(1);
+}
+// gh 未登录时：从 git 凭据管理器取 token（GitHub 个人访问令牌）
+if (!process.env.GH_TOKEN) {
+  try {
+    const cred = execSync("git credential fill", {
+      encoding: "utf8",
+      input: "protocol=https\nhost=github.com\n\n",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const token = cred.split("\n").find((l) => l.startsWith("password="))?.slice(9) ?? "";
+    if (token) process.env.GH_TOKEN = token;
+  } catch {
+    /* ignore */
+  }
 }
 
 // 1) 构建
@@ -59,15 +72,21 @@ try {
 
 // 4) 创建/复用 Release
 console.log("[3/6] 创建 GitHub Release（draft）…");
-let releaseJson;
 try {
-  releaseJson = run(`gh release create v${version} --draft --title "PI Agent v${version}" --notes "PI Agent v${version}" --json id,uploadUrl --jq .`, {
-    encoding: "utf8",
-  }).trim();
+  run(`gh release create v${version} --draft --title "PI Agent v${version}" --notes "PI Agent v${version}"`, {
+    stdio: "pipe",
+  });
 } catch {
-  console.log("release 可能已存在，尝试复用…");
-  releaseJson = run(`gh release view v${version} --json id,uploadUrl --jq .`, { encoding: "utf8" }).trim();
+  console.log("release 已存在，复用…");
 }
+// 校验 release 可访问（upload/edit 都用 tag 名，不依赖 id）
+try {
+  run(`gh release view v${version} --json tagName --jq .tagName`, { stdio: "pipe" });
+} catch {
+  console.error("release 不可访问：gh 是否登录？");
+  process.exit(1);
+}
+console.log(`release v${version} 就绪`);
 
 // 5) 上传 setup.exe（可能较慢，重试几次）
 console.log("[4/6] 上传安装包（可能需 1-3 分钟）…");
